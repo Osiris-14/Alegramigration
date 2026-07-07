@@ -593,13 +593,21 @@ def backfill_tabla(cur, conf):
 
     total_synced = 0
     start = 0
+    max_pages = 2000
+    page_count = 0
     while True:
+        if page_count > 0 and page_count % 50 == 0:
+            print(f"\n    [{tabla}] pagina {page_count}, total {total_synced}...")
         page = fetch_page(endpoint, start)
         if not page:
             break
         total_synced += cargar_pagina(cur, tabla, columnas, page, pk_campo)
         start += PAGE_SIZE
+        page_count += 1
         if len(page) < PAGE_SIZE:
+            break
+        if page_count >= max_pages:
+            print(f"\n    [{tabla}] corte por max_pages ({max_pages}) en start={start}")
             break
     return total_synced
 
