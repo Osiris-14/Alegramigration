@@ -8,6 +8,7 @@ import subprocess
 from datetime import datetime
 
 SCRIPTS = [
+    ("Alegra_supabase.PY",          "Extrayendo datos desde API Alegra → Bronce"),
     ("create_silver_v2.py",         "Creando schema Silver v2"),
     ("extract_jsonb_to_flat.py",    "Extrayendo JSONB a tablas planas"),
     ("extract_impuestos_to_flat.py","Extrayendo impuestos JSONB"),

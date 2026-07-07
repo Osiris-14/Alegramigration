@@ -19,9 +19,11 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install psycopg2-binary
+        run: pip install psycopg2-binary python-dotenv requests
 
       - name: Run Silver Pipeline
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          ALEGRA_EMAIL: ${{ secrets.ALEGRA_EMAIL }}
+          ALEGRA_TOKEN: ${{ secrets.ALEGRA_TOKEN }}
         run: python run_silver_pipeline.py
