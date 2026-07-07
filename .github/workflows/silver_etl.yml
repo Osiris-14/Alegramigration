@@ -1,0 +1,27 @@
+name: Silver ETL Pipeline
+
+on:
+  schedule:
+    - cron: '0 8,14,20 * * *'   # 3 veces al dia: 8am, 2pm, 8pm UTC (4am, 10am, 4pm RD)
+  workflow_dispatch:              # permite ejecucion manual desde GitHub
+
+jobs:
+  run-silver-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install psycopg2-binary
+
+      - name: Run Silver Pipeline
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python run_silver_pipeline.py

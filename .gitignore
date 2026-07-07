@@ -1,0 +1,45 @@
+# ============================================================
+# Archivos locales / sensibles - NO subir a GitHub
+# ============================================================
+.env
+.cloudya_profile/
+cloudya_profile/
+.alegra_token
+__pycache__/
+*.pyc
+
+# ============================================================
+# Archivos de Claude / Agentes - solo locales
+# ============================================================
+.claude/
+.agents/
+skills-lock.json
+AGENTS.md
+
+# ============================================================
+# Datos y reportes generados - no trackear
+# ============================================================
+*.json
+*.xlsx
+*.csv
+alegra_inventory.json
+
+# ============================================================
+# Scripts auxiliares locales (no forman parte del ETL core)
+# ============================================================
+diag_raw.py
+inspect_jsons.py
+Generar_excel_productos.py
+Alegra_discovery.py
+Anular_clientes_cloudya.py
+anular_proveedores_cloudya.py
+Cargar_clientes_cloudya.py
+Cargar_vendedores_cloudya.py
+
+# ============================================================
+# IDE / SO
+# ============================================================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
