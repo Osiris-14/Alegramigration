@@ -4,21 +4,21 @@ MASTER PIPELINE - Silver Layer ETL
 Modos:
   python run_silver_pipeline.py              -> full (5 pasos)
   python run_silver_pipeline.py --mode full  -> full (5 pasos)
-  python run_silver_pipeline.py --mode incremental -> incremental (3 pasos)
+  python run_silver_pipeline.py --mode incremental -> incremental (1 paso, solo bronce)
 
 Modo FULL  (1 vez/dia, madrugada):
-  1. Alegra_supabase.PY         - Backfill completo de 27 tablas → bronce
-  2. create_silver_v2.py        - Recrea schema Silver (DROP + CREATE AS SELECT)
-  3. extract_jsonb_to_flat.py   - Aplana JSONBs
-  4. extract_impuestos_to_flat.py - Aplana impuestos
-  5. add_silver_fks.py          - Agrega Foreign Keys
+  1. Alegra_supabase.PY              - Backfill completo → bronce (UPSERT por id)
+  2. create_silver_v2.py             - Reconstruye schema Silver desde cero
+  3. extract_jsonb_to_flat.py        - Aplana JSONBs desde alegra.* a tablas silver.*_items
+  4. extract_impuestos_to_flat.py    - Aplana impuestos JSONB
+  5. add_silver_fks.py               - Agrega Foreign Keys
 
 Modo INCREMENTAL (cada ~4h, resto del dia):
-  1. Alegra_supabase.PY --incremental  - Solo tablas transaccionales desde ultimo sync
-  2. extract_jsonb_to_flat.py          - Re-aplana (upsert, no destruye)
-  3. extract_impuestos_to_flat.py      - Re-aplana impuestos (upsert)
-  NOTA: create_silver_v2 y add_silver_fks usan DROP TABLE CASCADE
-        y no son seguros de correr en incremental.
+  1. Alegra_supabase.PY --incremental - UPSERT en bronce, nada mas
+
+  Silver queda "stale" hasta el proximo FULL diario (max 24h de latencia).
+  Esto es OK para BI/migracion. Si necesitas silver en tiempo real,
+  hay que agregar UPSERT al silver layer (mas complejo).
 """
 import os
 import sys
@@ -35,18 +35,16 @@ if sys.platform == "win32":
 
 # Secuencia completa para el sync full
 SCRIPTS_FULL = [
-    (["Alegra_supabase.PY"],                    "Extrayendo datos desde API Alegra → Bronce (FULL)"),
+    (["Alegra_supabase.PY"],                    "Extrayendo datos desde API Alegra -> Bronce (FULL)"),
     (["create_silver_v2.py"],                   "Creando schema Silver v2"),
     (["extract_jsonb_to_flat.py"],              "Extrayendo JSONB a tablas planas"),
     (["extract_impuestos_to_flat.py"],          "Extrayendo impuestos JSONB"),
     (["add_silver_fks.py"],                     "Agregando Foreign Keys a entidades maestras"),
 ]
 
-# Solo los pasos seguros para el sync incremental
+# Incremental: solo bronce. Silver se regenera en el FULL diario.
 SCRIPTS_INCREMENTAL = [
-    (["Alegra_supabase.PY", "--incremental"],   "Extrayendo datos desde API Alegra → Bronce (INCREMENTAL)"),
-    (["extract_jsonb_to_flat.py"],              "Extrayendo JSONB a tablas planas"),
-    (["extract_impuestos_to_flat.py"],          "Extrayendo impuestos JSONB"),
+    (["Alegra_supabase.PY", "--incremental"],   "Extrayendo datos desde API Alegra -> Bronce (INCREMENTAL)"),
 ]
 
 
