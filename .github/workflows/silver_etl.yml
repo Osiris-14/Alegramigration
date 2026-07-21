@@ -1,13 +1,37 @@
 name: Silver ETL Pipeline
 
+# Estrategia de ejecucion (hora UTC / hora RD UTC-4):
+#
+# FULL SYNC      - 1 vez/dia a las 02:00 UTC (10:00 PM RD)
+#                  Corre los 5 pasos completos (~25-30 min)
+#
+# INCREMENTAL    - 5 veces/dia a las 06, 10, 14, 18, 22 UTC
+#   (hora RD)       02am, 06am, 10am, 02pm, 06pm RD
+#                  Solo tablas transaccionales desde ultimo sync (~5-10 min)
+#
+# Total: 6 ejecuciones/dia
+
 on:
   schedule:
-    - cron: '0 8,14,20 * * *'   # 3 veces al dia: 8am, 2pm, 8pm UTC (4am, 10am, 4pm RD)
-  workflow_dispatch:              # permite ejecucion manual desde GitHub
+    # Full sync - 02:00 UTC (10pm RD)
+    - cron: '0 2 * * *'
+    # Incrementales - cada 4h empezando a las 06:00 UTC
+    - cron: '0 6,10,14,18,22 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Modo de ejecucion'
+        required: false
+        default: 'incremental'
+        type: choice
+        options:
+          - full
+          - incremental
 
 jobs:
-  run-silver-pipeline:
+  silver-pipeline:
     runs-on: ubuntu-latest
+    name: Silver ETL (${{ github.event.schedule == '0 2 * * *' && 'FULL' || (github.event_name == 'workflow_dispatch' && inputs.mode || 'INCREMENTAL') }})
 
     steps:
       - name: Checkout repo
@@ -17,13 +41,27 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: Install dependencies
-        run: pip install psycopg2-binary python-dotenv requests
+        run: pip install -r requirements.txt
+
+      - name: Determinar modo
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ inputs.mode }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.schedule }}" = "0 2 * * *" ]; then
+            echo "mode=full" >> $GITHUB_OUTPUT
+          else
+            echo "mode=incremental" >> $GITHUB_OUTPUT
+          fi
 
       - name: Run Silver Pipeline
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           ALEGRA_EMAIL: ${{ secrets.ALEGRA_EMAIL }}
           ALEGRA_TOKEN: ${{ secrets.ALEGRA_TOKEN }}
-        run: python run_silver_pipeline.py
+        run: |
+          echo ">>> Corriendo en modo: ${{ steps.mode.outputs.mode }}"
+          python run_silver_pipeline.py --mode ${{ steps.mode.outputs.mode }}

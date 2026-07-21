@@ -11,6 +11,11 @@ Corre esto en Claude Code.
 
 pip install requests python-dotenv psycopg2-binary --break-system-packages
 
+Modos de ejecución:
+  python Alegra_supabase.PY             -> full backfill (todas las tablas)
+  python Alegra_supabase.PY --incremental -> solo tablas transaccionales,
+                                             registros desde último sync
+
 Qué hace:
   - Crea el schema "alegra" en Supabase
   - Crea 27 tablas en español con columnas reales extraídas de los campos
@@ -40,10 +45,12 @@ normalizar eso en tablas hijas — dilo y lo armamos.
 """
 
 import os
+import sys
 import time
 import base64
 import requests
 import psycopg2
+from datetime import datetime, timezone, timedelta
 from psycopg2.extras import execute_values, Json
 from dotenv import load_dotenv
 
@@ -59,6 +66,17 @@ HEADERS = {"Authorization": f"Basic {auth_string}", "Accept": "application/json"
 
 PAGE_SIZE = 30
 SCHEMA = "alegra"
+
+# Tablas que soportan filtro por fecha en la API de Alegra.
+# Estas son las que se sincronizan en modo incremental.
+# Los catálogos (impuestos, monedas, usuarios, etc.) raramente cambian
+# y solo se sincronizan en el full.
+INCREMENTAL_TABLES = {
+    "invoices", "estimates", "remissions", "credit_notes",
+    "debit_notes", "bills", "purchase_orders", "payments",
+    "journals", "inventory_adjustments", "contacts", "items",
+    "recurring_payments",
+}
 
 
 def g(d, path, default=None):
@@ -512,8 +530,15 @@ def ensure_table(cur, tabla, columnas):
     """)
 
 
-def fetch_page(endpoint, start, singular=False):
-    params = {} if singular else {"start": start, "limit": PAGE_SIZE}
+def fetch_page(endpoint, start, singular=False, date_from=None):
+    if singular:
+        params = {}
+    else:
+        params = {"start": start, "limit": PAGE_SIZE}
+        # Alegra acepta date_created_start en endpoints transaccionales
+        if date_from:
+            params["date_created_start"] = date_from
+
     resp = requests.get(f"{BASE_URL}{endpoint}", headers=HEADERS, params=params, timeout=60)
 
     remaining = resp.headers.get("X-Rate-Limit-Remaining")
@@ -523,7 +548,7 @@ def fetch_page(endpoint, start, singular=False):
         wait = int(reset) + 1 if reset else 60
         print(f"    rate limit alcanzado, esperando {wait}s...")
         time.sleep(wait)
-        return fetch_page(endpoint, start, singular)
+        return fetch_page(endpoint, start, singular, date_from)
 
     resp.raise_for_status()
 
@@ -578,7 +603,7 @@ def cargar_pagina(cur, tabla, columnas, page, pk_campo, forzar_id=None):
     return len(filas)
 
 
-def backfill_tabla(cur, conf):
+def backfill_tabla(cur, conf, date_from=None):
     tabla = conf["tabla"]
     endpoint = conf["endpoint"]
     columnas = conf["columnas"]
@@ -598,7 +623,7 @@ def backfill_tabla(cur, conf):
     while True:
         if page_count > 0 and page_count % 50 == 0:
             print(f"\n    [{tabla}] pagina {page_count}, total {total_synced}...")
-        page = fetch_page(endpoint, start)
+        page = fetch_page(endpoint, start, date_from=date_from)
         if not page:
             break
         total_synced += cargar_pagina(cur, tabla, columnas, page, pk_campo)
@@ -612,27 +637,88 @@ def backfill_tabla(cur, conf):
     return total_synced
 
 
+def ensure_sync_metadata(cur):
+    """Crea la tabla de control de sincronizaciones si no existe."""
+    cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS {SCHEMA}.sync_metadata (
+            id          text PRIMARY KEY,
+            last_full   timestamptz,
+            last_incr   timestamptz,
+            updated_at  timestamptz DEFAULT now()
+        );
+        INSERT INTO {SCHEMA}.sync_metadata (id)
+        VALUES ('control')
+        ON CONFLICT (id) DO NOTHING;
+    """)
+
+
+def get_last_sync(cur):
+    """Retorna la fecha del último sync incremental (o full si no hay incr)."""
+    cur.execute(f"""
+        SELECT COALESCE(last_incr, last_full, now() - interval '8 hours')
+        FROM {SCHEMA}.sync_metadata
+        WHERE id = 'control';
+    """)
+    row = cur.fetchone()
+    return row[0] if row else (datetime.now(timezone.utc) - timedelta(hours=8))
+
+
+def update_sync_timestamp(cur, mode):
+    """Actualiza el timestamp del último sync según el modo."""
+    col = "last_full" if mode == "full" else "last_incr"
+    cur.execute(f"""
+        UPDATE {SCHEMA}.sync_metadata
+        SET {col} = now(), updated_at = now()
+        WHERE id = 'control';
+    """)
+
+
 def main():
+    incremental = "--incremental" in sys.argv
+    mode = "incremental" if incremental else "full"
+
     conn = psycopg2.connect(DB_URL)
     conn.autocommit = False
     cur = conn.cursor()
     cur.execute(f"create schema if not exists {SCHEMA};")
+    ensure_sync_metadata(cur)
     conn.commit()
 
-    print(f"Cargando {len(TABLES)} tablas en el schema '{SCHEMA}'...\n")
-    for clave, conf in TABLES.items():
+    if incremental:
+        last_sync = get_last_sync(cur)
+        # Alegra usa formato YYYY-MM-DD para el filtro de fecha
+        date_from = last_sync.strftime("%Y-%m-%d")
+        tablas_a_sync = {k: v for k, v in TABLES.items() if k in INCREMENTAL_TABLES}
+        print(f"MODO INCREMENTAL - desde {date_from} ({len(tablas_a_sync)} tablas transaccionales)\n")
+    else:
+        date_from = None
+        tablas_a_sync = TABLES
+        print(f"MODO FULL - {len(tablas_a_sync)} tablas\n")
+
+    errores = []
+    for clave, conf in tablas_a_sync.items():
         print(f"-> {conf['tabla']:25s}", end=" ", flush=True)
         try:
-            n = backfill_tabla(cur, conf)
+            n = backfill_tabla(cur, conf, date_from=date_from)
             conn.commit()
             print(f"OK ({n} registros)")
         except Exception as e:
             conn.rollback()
             print(f"ERROR: {e}")
+            errores.append(conf['tabla'])
+
+    # Guardar timestamp del sync exitoso
+    update_sync_timestamp(cur, mode)
+    conn.commit()
 
     cur.close()
     conn.close()
-    print("\nListo. Revisa el schema 'alegra' en Supabase.")
+
+    if errores:
+        print(f"\nListo con {len(errores)} error(es): {errores}")
+        sys.exit(1)
+    else:
+        print(f"\nListo ({mode}). Revisa el schema 'alegra' en Supabase.")
 
 
 if __name__ == "__main__":
