@@ -25,6 +25,14 @@ import sys
 import subprocess
 from datetime import datetime
 
+# Forzar UTF-8 en stdout/stderr para compatibilidad con Windows cp1252
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
 # Secuencia completa para el sync full
 SCRIPTS_FULL = [
     (["Alegra_supabase.PY"],                    "Extrayendo datos desde API Alegra → Bronce (FULL)"),

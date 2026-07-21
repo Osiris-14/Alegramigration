@@ -685,6 +685,15 @@ def main():
     conn.commit()
 
     if incremental:
+        # Safeguard: si la BD está vacía, forzar FULL aunque pidan --incremental
+        cur.execute("SELECT count(*) FROM alegra.facturas_venta")
+        total_alegra = cur.fetchone()[0]
+        if total_alegra == 0:
+            print("AVISO: el schema 'alegra' está vacío. Cambiando incremental -> full\n")
+            incremental = False
+            mode = "full"
+
+    if incremental:
         last_sync = get_last_sync(cur)
         # Alegra usa formato YYYY-MM-DD para el filtro de fecha
         date_from = last_sync.strftime("%Y-%m-%d")

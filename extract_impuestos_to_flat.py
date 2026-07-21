@@ -51,11 +51,11 @@ def main():
         i.linea AS item_linea,
         row_number() OVER (PARTITION BY i.factura_alegra_id, i.linea) AS impuesto_linea,
         imp->>'id' AS impuesto_id,
-        imp->>'name' AS nombre,
-        imp->>'type' AS tipo,
-        (imp->>'amount')::numeric AS monto,
-        imp->>'percentage' AS porcentaje,
-        imp->>'status' AS estado,
+        NULLIF(imp->>'name', '') AS nombre,
+        NULLIF(imp->>'type', '') AS tipo,
+        NULLIF(imp->>'amount', '')::numeric AS monto,
+        NULLIF(imp->>'percentage', '') AS porcentaje,
+        NULLIF(imp->>'status', '') AS estado,
         NULLIF(imp->>'description', '') AS descripcion
     FROM items_con_impuestos i,
          LATERAL jsonb_array_elements(i.impuestos) imp
@@ -81,12 +81,15 @@ def main():
         i.linea AS item_linea,
         row_number() OVER (PARTITION BY i.cotizacion_alegra_id, i.linea) AS impuesto_linea,
         imp->>'id' AS impuesto_id,
-        imp->>'name' AS nombre,
-        imp->>'type' AS tipo,
-        (imp->>'amount')::numeric AS monto,
-        imp->>'percentage' AS porcentaje,
-        imp->>'status' AS estado,
-        (imp->>'deductible')::boolean AS deducible,
+        NULLIF(imp->>'name', '') AS nombre,
+        NULLIF(imp->>'type', '') AS tipo,
+        NULLIF(imp->>'amount', '')::numeric AS monto,
+        NULLIF(imp->>'percentage', '') AS porcentaje,
+        NULLIF(imp->>'status', '') AS estado,
+        CASE
+            WHEN imp->>'deductible' IN ('true', 'false') THEN (imp->>'deductible')::boolean
+            ELSE NULL
+        END AS deducible,
         NULLIF(imp->>'description', '') AS descripcion
     FROM items_con_impuestos i,
          LATERAL jsonb_array_elements(i.impuestos) imp
@@ -112,11 +115,11 @@ def main():
         i.linea AS item_linea,
         row_number() OVER (PARTITION BY i.nota_credito_alegra_id, i.linea) AS impuesto_linea,
         imp->>'id' AS impuesto_id,
-        imp->>'name' AS nombre,
-        imp->>'type' AS tipo,
-        (imp->>'amount')::numeric AS monto,
-        imp->>'percentage' AS porcentaje,
-        imp->>'status' AS estado,
+        NULLIF(imp->>'name', '') AS nombre,
+        NULLIF(imp->>'type', '') AS tipo,
+        NULLIF(imp->>'amount', '')::numeric AS monto,
+        NULLIF(imp->>'percentage', '') AS porcentaje,
+        NULLIF(imp->>'status', '') AS estado,
         NULLIF(imp->>'description', '') AS descripcion
     FROM items_con_impuestos i,
          LATERAL jsonb_array_elements(i.impuestos) imp
@@ -144,12 +147,15 @@ def main():
         i.linea AS item_linea,
         row_number() OVER (PARTITION BY i.factura_compra_alegra_id, i.linea) AS impuesto_linea,
         imp->>'id' AS impuesto_id,
-        imp->>'name' AS nombre,
-        imp->>'type' AS tipo,
-        (imp->>'amount')::numeric AS monto,
-        imp->>'percentage' AS porcentaje,
-        imp->>'status' AS estado,
-        (imp->>'deductible')::boolean AS deducible,
+        NULLIF(imp->>'name', '') AS nombre,
+        NULLIF(imp->>'type', '') AS tipo,
+        NULLIF(imp->>'amount', '')::numeric AS monto,
+        NULLIF(imp->>'percentage', '') AS porcentaje,
+        NULLIF(imp->>'status', '') AS estado,
+        CASE
+            WHEN imp->>'deductible' IN ('true', 'false') THEN (imp->>'deductible')::boolean
+            ELSE NULL
+        END AS deducible,
         NULLIF(imp->>'description', '') AS descripcion
     FROM items_con_impuestos i,
          LATERAL jsonb_array_elements(i.impuestos) imp
@@ -175,12 +181,15 @@ def main():
         i.linea AS item_linea,
         row_number() OVER (PARTITION BY i.orden_compra_alegra_id, i.linea) AS impuesto_linea,
         imp->>'id' AS impuesto_id,
-        imp->>'name' AS nombre,
-        imp->>'type' AS tipo,
-        (imp->>'amount')::numeric AS monto,
-        imp->>'percentage' AS porcentaje,
-        imp->>'status' AS estado,
-        (imp->>'deductible')::boolean AS deducible,
+        NULLIF(imp->>'name', '') AS nombre,
+        NULLIF(imp->>'type', '') AS tipo,
+        NULLIF(imp->>'amount', '')::numeric AS monto,
+        NULLIF(imp->>'percentage', '') AS porcentaje,
+        NULLIF(imp->>'status', '') AS estado,
+        CASE
+            WHEN imp->>'deductible' IN ('true', 'false') THEN (imp->>'deductible')::boolean
+            ELSE NULL
+        END AS deducible,
         NULLIF(imp->>'description', '') AS descripcion
     FROM items_con_impuestos i,
          LATERAL jsonb_array_elements(i.impuestos) imp
@@ -232,6 +241,7 @@ def main():
         fk_name = f"fk_{table}"
         print(f"  silver.{table}.({fk_cols}) -> silver.{ref_table}.({ref_cols})...", end=" ", flush=True)
         try:
+            run(cur, f"ALTER TABLE silver.{table} DROP CONSTRAINT IF EXISTS {fk_name}")
             run(cur, f"""
                 ALTER TABLE silver.{table}
                 ADD CONSTRAINT {fk_name}

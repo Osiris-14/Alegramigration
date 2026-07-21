@@ -4,9 +4,18 @@ Estrategia:
   - Si hay orphans: poner esa FK en NULL antes de crear el constraint
   - Si no hay orphans: crear FK directamente
 """
+import os
+import sys
 import psycopg2
+from dotenv import load_dotenv
 
-CONN = 'postgresql://postgres.xilcckvfaawcmjeazhku:Supebase2030*@aws-1-us-east-1.pooler.supabase.com:5432/postgres'
+load_dotenv()
+
+CONN = os.environ.get("SUPABASE_DB_URL")
+if not CONN:
+    print("ERROR: variable SUPABASE_DB_URL no definida (.env o entorno)")
+    sys.exit(1)
+
 conn = psycopg2.connect(CONN)
 conn.autocommit = False
 cur = conn.cursor()
@@ -46,10 +55,23 @@ print("=" * 65)
 
 nullified = []
 fk_created = []
+fk_failed = []
 
 for child_t, fk_col, parent_t, orphans in relations:
     fk_name = f"fk_{child_t}_{fk_col}"
     rel = f"{child_t}.{fk_col} -> {parent_t}"
+
+    # Verificar que ambas tablas existen antes de tocar nada
+    cur.execute("""
+        SELECT
+            EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='silver' AND table_name=%s),
+            EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='silver' AND table_name=%s)
+    """, (child_t, parent_t))
+    child_exists, parent_exists = cur.fetchone()
+    if not child_exists or not parent_exists:
+        print(f"  [SKIP] {rel}  -> falta tabla (child={child_exists}, parent={parent_exists})")
+        fk_failed.append((rel, "tabla inexistente"))
+        continue
 
     # Step 1: Drop existing FK if exists (idempotent)
     cur.execute(f"""
@@ -57,8 +79,30 @@ for child_t, fk_col, parent_t, orphans in relations:
         DROP CONSTRAINT IF EXISTS {fk_name};
     """)
 
-    # Step 2: Nullify orphans if needed
-    if orphans > 0:
+    # Step 2: Nullify orphans si la columna existe
+    cur.execute("""
+        SELECT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema='silver' AND table_name=%s AND column_name=%s
+        )
+    """, (child_t, fk_col))
+    col_exists = cur.fetchone()[0]
+    if not col_exists:
+        print(f"  [SKIP] {rel}  -> columna {fk_col} no existe en silver.{child_t}")
+        fk_failed.append((rel, f"columna {fk_col} inexistente"))
+        continue
+
+    # Recalcular orphans reales (no confiar en el hardcoded)
+    cur.execute(f"""
+        SELECT count(*) FROM silver.{child_t} c
+        WHERE c.{fk_col} IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM silver.{parent_t} p
+              WHERE p.alegra_id::text = c.{fk_col}::text
+          )
+    """)
+    real_orphans = cur.fetchone()[0]
+    if real_orphans > 0:
         cur.execute(f"""
             UPDATE silver.{child_t}
             SET {fk_col} = NULL
@@ -68,24 +112,26 @@ for child_t, fk_col, parent_t, orphans in relations:
                   WHERE p.alegra_id::text = {child_t}.{fk_col}::text
               );
         """)
-        affected = cur.rowcount
-        print(f"  [NULL] {rel}")
-        print(f"         -> {affected} orphans puestos en NULL")
-        nullified.append((rel, affected))
+        print(f"  [NULL] {rel}  -> {real_orphans} orphans puestos en NULL")
+        nullified.append((rel, real_orphans))
 
     # Step 3: Add FK constraint
-    cur.execute(f"""
-        ALTER TABLE silver.{child_t}
-        ADD CONSTRAINT {fk_name}
-        FOREIGN KEY ({fk_col})
-        REFERENCES silver.{parent_t} (alegra_id)
-        ON DELETE SET NULL
-        DEFERRABLE INITIALLY DEFERRED;
-    """)
-    fk_created.append(rel)
-    print(f"  [FK]   {rel}  OK")
-
-conn.commit()
+    try:
+        cur.execute(f"""
+            ALTER TABLE silver.{child_t}
+            ADD CONSTRAINT {fk_name}
+            FOREIGN KEY ({fk_col})
+            REFERENCES silver.{parent_t} (alegra_id)
+            ON DELETE SET NULL
+            DEFERRABLE INITIALLY DEFERRED;
+        """)
+        conn.commit()
+        fk_created.append(rel)
+        print(f"  [FK]   {rel}  OK")
+    except Exception as e:
+        conn.rollback()
+        print(f"  [FAIL] {rel}  -> {e}")
+        fk_failed.append((rel, str(e)[:200]))
 
 # ============================================================
 # VERIFICACION: listar todos los FKs creados
@@ -129,10 +175,15 @@ print("REPORTE FINAL")
 print("=" * 65)
 print(f"  FKs creadas:          {len(fk_created)}")
 print(f"  Relaciones con NULL:  {len(nullified)}")
+print(f"  FKs fallidas:         {len(fk_failed)}")
 if nullified:
     print("  Detalle de orphans resueltos:")
     for rel, n in nullified:
         print(f"    {rel}  ({n} puestos en NULL)")
+if fk_failed:
+    print("  Detalle de FKs fallidas:")
+    for rel, motivo in fk_failed:
+        print(f"    {rel}  -> {motivo}")
 
 cur.close()
 conn.close()

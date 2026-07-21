@@ -66,23 +66,31 @@ def main():
     run(cur, """
     CREATE TABLE silver.facturas_venta_items AS
     SELECT
-        fv.alegra_id AS factura_alegra_id,
-        row_number() OVER (PARTITION BY fv.alegra_id) AS linea,
-        (item->>'id')::integer AS item_id,
-        item->>'name' AS nombre,
-        item->>'unit' AS unidad,
+        fv.id AS factura_alegra_id,
+        row_number() OVER (PARTITION BY fv.id) AS linea,
+        CASE WHEN item->>'id' ~ '^[0-9]+$' THEN (item->>'id')::integer ELSE NULL END AS item_id,
+        NULLIF(item->>'name', '') AS nombre,
+        NULLIF(item->>'unit', '') AS unidad,
         NULLIF(item->>'reference', '') AS referencia,
-        item->>'itemType' AS tipo_item,
+        NULLIF(item->>'itemType', '') AS tipo_item,
         NULLIF(item->>'description', '') AS descripcion,
-        (item->>'quantity')::numeric AS cantidad,
-        (item->>'price')::numeric AS precio_unitario,
-        (item->>'discount')::numeric AS descuento_porcentaje,
-        (item->>'discountAmount')::numeric AS descuento_monto,
-        (item->>'total')::numeric AS total,
-        item->>'discountType' AS tipo_descuento,
-        NULLIF(item->>'idItemRemission', '') AS id_item_remision,
+        NULLIF(item->>'quantity', '')::numeric AS cantidad,
+        NULLIF(item->>'price', '')::numeric AS precio_unitario,
+        CASE
+            WHEN jsonb_typeof(item->'discount') = 'number' THEN (item->>'discount')::numeric
+            WHEN jsonb_typeof(item->'discount') = 'object' THEN NULLIF(item->'discount'->>'percentage', '')::numeric
+            ELSE NULL
+        END AS descuento_porcentaje,
+        CASE
+            WHEN jsonb_typeof(item->'discount') = 'object' THEN NULLIF(item->'discount'->>'value', '')::numeric
+            WHEN item->>'discountAmount' IS NOT NULL THEN NULLIF(item->>'discountAmount', '')::numeric
+            ELSE NULL
+        END AS descuento_monto,
+        NULLIF(item->>'total', '')::numeric AS total,
+        NULLIF(item->>'discountType', '') AS tipo_descuento,
+        NULLIF(item->>'idItemRemission', '') AS id_item_remission,
         item->'tax' AS impuestos
-    FROM silver.facturas_venta fv,
+    FROM alegra.facturas_venta fv,
          LATERAL jsonb_array_elements(fv.items) item
     """)
     run(cur, "ALTER TABLE silver.facturas_venta_items ADD PRIMARY KEY (factura_alegra_id, linea);")
@@ -99,18 +107,18 @@ def main():
     run(cur, """
     CREATE TABLE silver.facturas_venta_pagos_aplicados AS
     SELECT
-        fv.alegra_id AS factura_alegra_id,
-        row_number() OVER (PARTITION BY fv.alegra_id) AS linea,
-        (pago->>'id')::integer AS pago_id,
-        pago->>'number' AS numero_pago,
+        fv.id AS factura_alegra_id,
+        row_number() OVER (PARTITION BY fv.id) AS linea,
+        CASE WHEN pago->>'id' ~ '^[0-9]+$' THEN (pago->>'id')::integer ELSE NULL END AS pago_id,
+        NULLIF(pago->>'number', '') AS numero_pago,
         NULLIF(pago->>'prefix', '') AS prefijo,
-        pago->>'date' AS fecha,
-        pago->>'status' AS estado,
-        (pago->>'amount')::numeric AS monto,
-        pago->>'paymentMethod' AS metodo_pago,
+        NULLIF(pago->>'date', '') AS fecha,
+        NULLIF(pago->>'status', '') AS estado,
+        NULLIF(pago->>'amount', '')::numeric AS monto,
+        NULLIF(pago->>'paymentMethod', '') AS metodo_pago,
         NULLIF(pago->>'anotation', '') AS anotacion,
         NULLIF(pago->>'observations', '') AS observaciones
-    FROM silver.facturas_venta fv,
+    FROM alegra.facturas_venta fv,
          LATERAL jsonb_array_elements(fv.pagos_aplicados) pago
     """)
     run(cur, "ALTER TABLE silver.facturas_venta_pagos_aplicados ADD PRIMARY KEY (factura_alegra_id, linea);")
@@ -126,18 +134,22 @@ def main():
     run(cur, """
     CREATE TABLE silver.cotizaciones_items AS
     SELECT
-        c.alegra_id AS cotizacion_alegra_id,
-        row_number() OVER (PARTITION BY c.alegra_id) AS linea,
-        (item->>'id')::integer AS item_id,
-        item->>'name' AS nombre,
+        c.id AS cotizacion_alegra_id,
+        row_number() OVER (PARTITION BY c.id) AS linea,
+        CASE WHEN item->>'id' ~ '^[0-9]+$' THEN (item->>'id')::integer ELSE NULL END AS item_id,
+        NULLIF(item->>'name', '') AS nombre,
         NULLIF(item->>'reference', '') AS referencia,
         NULLIF(item->>'description', '') AS descripcion,
-        (item->>'quantity')::numeric AS cantidad,
-        (item->>'price')::numeric AS precio_unitario,
-        (item->>'discount')::numeric AS descuento_porcentaje,
-        (item->>'total')::numeric AS total,
+        NULLIF(item->>'quantity', '')::numeric AS cantidad,
+        NULLIF(item->>'price', '')::numeric AS precio_unitario,
+        CASE
+            WHEN jsonb_typeof(item->'discount') = 'number' THEN (item->>'discount')::numeric
+            WHEN jsonb_typeof(item->'discount') = 'object' THEN NULLIF(item->'discount'->>'percentage', '')::numeric
+            ELSE NULL
+        END AS descuento_porcentaje,
+        NULLIF(item->>'total', '')::numeric AS total,
         item->'tax' AS impuestos
-    FROM silver.cotizaciones c,
+    FROM alegra.cotizaciones c,
          LATERAL jsonb_array_elements(c.items) item
     """)
     run(cur, "ALTER TABLE silver.cotizaciones_items ADD PRIMARY KEY (cotizacion_alegra_id, linea);")
@@ -153,19 +165,23 @@ def main():
     run(cur, """
     CREATE TABLE silver.notas_credito_items AS
     SELECT
-        nc.alegra_id AS nota_credito_alegra_id,
-        row_number() OVER (PARTITION BY nc.alegra_id) AS linea,
-        (item->>'id')::integer AS item_id,
-        item->>'name' AS nombre,
+        nc.id AS nota_credito_alegra_id,
+        row_number() OVER (PARTITION BY nc.id) AS linea,
+        CASE WHEN item->>'id' ~ '^[0-9]+$' THEN (item->>'id')::integer ELSE NULL END AS item_id,
+        NULLIF(item->>'name', '') AS nombre,
         NULLIF(item->>'reference', '') AS referencia,
         NULLIF(item->>'description', '') AS descripcion,
-        (item->>'quantity')::numeric AS cantidad,
-        (item->>'price')::numeric AS precio_unitario,
-        (item->>'discount')::numeric AS descuento_porcentaje,
-        (item->>'subtotal')::numeric AS subtotal,
-        (item->>'total')::numeric AS total,
+        NULLIF(item->>'quantity', '')::numeric AS cantidad,
+        NULLIF(item->>'price', '')::numeric AS precio_unitario,
+        CASE
+            WHEN jsonb_typeof(item->'discount') = 'number' THEN (item->>'discount')::numeric
+            WHEN jsonb_typeof(item->'discount') = 'object' THEN NULLIF(item->'discount'->>'percentage', '')::numeric
+            ELSE NULL
+        END AS descuento_porcentaje,
+        NULLIF(item->>'subtotal', '')::numeric AS subtotal,
+        NULLIF(item->>'total', '')::numeric AS total,
         item->'tax' AS impuestos
-    FROM silver.notas_credito nc,
+    FROM alegra.notas_credito nc,
          LATERAL jsonb_array_elements(nc.items) item
     """)
     run(cur, "ALTER TABLE silver.notas_credito_items ADD PRIMARY KEY (nota_credito_alegra_id, linea);")
@@ -181,18 +197,18 @@ def main():
     run(cur, """
     CREATE TABLE silver.notas_credito_facturas_relacionadas AS
     SELECT
-        nc.alegra_id AS nota_credito_alegra_id,
-        row_number() OVER (PARTITION BY nc.alegra_id) AS linea,
-        (rel->>'id')::integer AS factura_id,
-        rel->>'number' AS numero_factura,
+        nc.id AS nota_credito_alegra_id,
+        row_number() OVER (PARTITION BY nc.id) AS linea,
+        CASE WHEN rel->>'id' ~ '^[0-9]+$' THEN (rel->>'id')::integer ELSE NULL END AS factura_id,
+        NULLIF(rel->>'number', '') AS numero_factura,
         NULLIF(rel->>'prefix', '') AS prefijo,
-        rel->>'fullNumber' AS numero_completo,
-        rel->>'date' AS fecha,
-        rel->>'dueDate' AS fecha_vencimiento,
-        (rel->>'total')::numeric AS total_factura,
-        (rel->>'amount')::numeric AS monto_aplicado,
-        (rel->>'balance')::numeric AS saldo
-    FROM silver.notas_credito nc,
+        NULLIF(rel->>'fullNumber', '') AS numero_completo,
+        NULLIF(rel->>'date', '') AS fecha,
+        NULLIF(rel->>'dueDate', '') AS fecha_vencimiento,
+        NULLIF(rel->>'total', '')::numeric AS total_factura,
+        NULLIF(rel->>'amount', '')::numeric AS monto_aplicado,
+        NULLIF(rel->>'balance', '')::numeric AS saldo
+    FROM alegra.notas_credito nc,
          LATERAL jsonb_array_elements(nc.facturas_relacionadas) rel
     """)
     run(cur, "ALTER TABLE silver.notas_credito_facturas_relacionadas ADD PRIMARY KEY (nota_credito_alegra_id, linea);")
@@ -208,19 +224,23 @@ def main():
     run(cur, """
     CREATE TABLE silver.facturas_compra_compras AS
     SELECT
-        fc.alegra_id AS factura_compra_alegra_id,
-        row_number() OVER (PARTITION BY fc.alegra_id) AS linea,
-        (cat->>'id')::integer AS item_id,
-        cat->>'name' AS nombre,
-        (cat->>'quantity')::numeric AS cantidad,
-        (cat->>'price')::numeric AS precio_unitario,
-        (cat->>'discount')::numeric AS descuento,
-        (cat->>'subtotal')::numeric AS subtotal,
-        (cat->>'taxAmount')::numeric AS monto_impuesto,
-        (cat->>'total')::numeric AS total,
+        fc.id AS factura_compra_alegra_id,
+        row_number() OVER (PARTITION BY fc.id) AS linea,
+        CASE WHEN cat->>'id' ~ '^[0-9]+$' THEN (cat->>'id')::integer ELSE NULL END AS item_id,
+        NULLIF(cat->>'name', '') AS nombre,
+        NULLIF(cat->>'quantity', '')::numeric AS cantidad,
+        NULLIF(cat->>'price', '')::numeric AS precio_unitario,
+        CASE
+            WHEN jsonb_typeof(cat->'discount') = 'number' THEN (cat->>'discount')::numeric
+            WHEN jsonb_typeof(cat->'discount') = 'object' THEN NULLIF(cat->'discount'->>'percentage', '')::numeric
+            ELSE NULLIF(cat->>'discount', '')::numeric
+        END AS descuento,
+        NULLIF(cat->>'subtotal', '')::numeric AS subtotal,
+        NULLIF(cat->>'taxAmount', '')::numeric AS monto_impuesto,
+        NULLIF(cat->>'total', '')::numeric AS total,
         NULLIF(cat->>'observations', '') AS observaciones,
         cat->'tax' AS impuestos
-    FROM silver.facturas_compra fc,
+    FROM alegra.facturas_compra fc,
          LATERAL jsonb_array_elements(fc.compras->'categories') cat
     """)
     run(cur, "ALTER TABLE silver.facturas_compra_compras ADD PRIMARY KEY (factura_compra_alegra_id, linea);")
@@ -236,18 +256,18 @@ def main():
     run(cur, """
     CREATE TABLE silver.facturas_compra_pagos_aplicados AS
     SELECT
-        fc.alegra_id AS factura_compra_alegra_id,
-        row_number() OVER (PARTITION BY fc.alegra_id) AS linea,
-        (pago->>'id')::integer AS pago_id,
-        pago->>'number' AS numero_pago,
+        fc.id AS factura_compra_alegra_id,
+        row_number() OVER (PARTITION BY fc.id) AS linea,
+        CASE WHEN pago->>'id' ~ '^[0-9]+$' THEN (pago->>'id')::integer ELSE NULL END AS pago_id,
+        NULLIF(pago->>'number', '') AS numero_pago,
         NULLIF(pago->>'prefix', '') AS prefijo,
-        pago->>'date' AS fecha,
-        pago->>'status' AS estado,
-        (pago->>'amount')::numeric AS monto,
-        pago->>'paymentMethod' AS metodo_pago,
+        NULLIF(pago->>'date', '') AS fecha,
+        NULLIF(pago->>'status', '') AS estado,
+        NULLIF(pago->>'amount', '')::numeric AS monto,
+        NULLIF(pago->>'paymentMethod', '') AS metodo_pago,
         NULLIF(pago->>'anotation', '') AS anotacion,
         NULLIF(pago->>'observations', '') AS observaciones
-    FROM silver.facturas_compra fc,
+    FROM alegra.facturas_compra fc,
          LATERAL jsonb_array_elements(fc.pagos_aplicados) pago
     """)
     run(cur, "ALTER TABLE silver.facturas_compra_pagos_aplicados ADD PRIMARY KEY (factura_compra_alegra_id, linea);")
@@ -263,17 +283,21 @@ def main():
     run(cur, """
     CREATE TABLE silver.ordenes_compra_compras AS
     SELECT
-        oc.alegra_id AS orden_compra_alegra_id,
-        row_number() OVER (PARTITION BY oc.alegra_id) AS linea,
-        (cat->>'id')::integer AS item_id,
-        cat->>'name' AS nombre,
-        (cat->>'quantity')::numeric AS cantidad,
-        (cat->>'price')::numeric AS precio_unitario,
-        (cat->>'discount')::numeric AS descuento,
-        (cat->>'total')::numeric AS total,
+        oc.id AS orden_compra_alegra_id,
+        row_number() OVER (PARTITION BY oc.id) AS linea,
+        CASE WHEN cat->>'id' ~ '^[0-9]+$' THEN (cat->>'id')::integer ELSE NULL END AS item_id,
+        NULLIF(cat->>'name', '') AS nombre,
+        NULLIF(cat->>'quantity', '')::numeric AS cantidad,
+        NULLIF(cat->>'price', '')::numeric AS precio_unitario,
+        CASE
+            WHEN jsonb_typeof(cat->'discount') = 'number' THEN (cat->>'discount')::numeric
+            WHEN jsonb_typeof(cat->'discount') = 'object' THEN NULLIF(cat->'discount'->>'percentage', '')::numeric
+            ELSE NULLIF(cat->>'discount', '')::numeric
+        END AS descuento,
+        NULLIF(cat->>'total', '')::numeric AS total,
         NULLIF(cat->>'observations', '') AS observaciones,
         cat->'tax' AS impuestos
-    FROM silver.ordenes_compra oc,
+    FROM alegra.ordenes_compra oc,
          LATERAL jsonb_array_elements(oc.compras->'categories') cat
     """)
     run(cur, "ALTER TABLE silver.ordenes_compra_compras ADD PRIMARY KEY (orden_compra_alegra_id, linea);")
@@ -289,16 +313,16 @@ def main():
     run(cur, """
     CREATE TABLE silver.pagos_facturas_aplicadas AS
     SELECT
-        p.alegra_id AS pago_alegra_id,
-        row_number() OVER (PARTITION BY p.alegra_id) AS linea,
-        (fac->>'id')::integer AS factura_id,
-        fac->>'number' AS numero_factura,
-        fac->>'date' AS fecha,
-        fac->>'dueDate' AS fecha_vencimiento,
-        (fac->>'total')::numeric AS total_factura,
-        (fac->>'amount')::numeric AS monto_aplicado
-    FROM silver.pagos p,
-         LATERAL jsonb_array_elements(p.facturas_aplicadas) fac
+        p.id AS pago_alegra_id,
+        row_number() OVER (PARTITION BY p.id) AS linea,
+        CASE WHEN fac->>'id' ~ '^[0-9]+$' THEN (fac->>'id')::integer ELSE NULL END AS factura_id,
+        NULLIF(fac->>'number', '') AS numero_factura,
+        NULLIF(fac->>'date', '') AS fecha,
+        NULLIF(fac->>'dueDate', '') AS fecha_vencimiento,
+        NULLIF(fac->>'total', '')::numeric AS total_factura,
+        NULLIF(fac->>'amount', '')::numeric AS monto_aplicado
+    FROM alegra.pagos p,
+         LATERAL jsonb_array_elements(p.facturas_compra_aplicadas) fac
     """)
     run(cur, "ALTER TABLE silver.pagos_facturas_aplicadas ADD PRIMARY KEY (pago_alegra_id, linea);")
     run(cur, "CREATE INDEX ON silver.pagos_facturas_aplicadas(pago_alegra_id);")
@@ -313,17 +337,17 @@ def main():
     run(cur, """
     CREATE TABLE silver.productos_impuestos AS
     SELECT
-        p.alegra_id AS producto_alegra_id,
-        row_number() OVER (PARTITION BY p.alegra_id) AS linea,
+        p.id AS producto_alegra_id,
+        row_number() OVER (PARTITION BY p.id) AS linea,
         imp->>'id' AS impuesto_id,
-        imp->>'name' AS nombre,
-        imp->>'type' AS tipo,
-        imp->>'percentage' AS porcentaje,
-        imp->>'status' AS estado,
-        imp->>'deductible' AS deducible,
+        NULLIF(imp->>'name', '') AS nombre,
+        NULLIF(imp->>'type', '') AS tipo,
+        NULLIF(imp->>'percentage', '') AS porcentaje,
+        NULLIF(imp->>'status', '') AS estado,
+        NULLIF(imp->>'deductible', '') AS deducible,
         NULLIF(imp->>'description', '') AS descripcion
-    FROM silver.productos p,
-         LATERAL jsonb_array_elements(p.impuestos_raw) imp
+    FROM alegra.productos p,
+         LATERAL jsonb_array_elements(p.impuestos) imp
     """)
     run(cur, "ALTER TABLE silver.productos_impuestos ADD PRIMARY KEY (producto_alegra_id, linea);")
     run(cur, "CREATE INDEX ON silver.productos_impuestos(producto_alegra_id);")
@@ -338,20 +362,20 @@ def main():
     run(cur, """
     CREATE TABLE silver.productos_subitems AS
     SELECT
-        p.alegra_id AS producto_alegra_id,
-        row_number() OVER (PARTITION BY p.alegra_id) AS linea,
-        (sub->>'quantity')::numeric AS cantidad,
-        (sub->>'price')::numeric AS precio,
+        p.id AS producto_alegra_id,
+        row_number() OVER (PARTITION BY p.id) AS linea,
+        NULLIF(sub->>'quantity', '')::numeric AS cantidad,
+        NULLIF(sub->>'price', '')::numeric AS precio,
         sub->'item'->>'id' AS subitem_id,
-        sub->'item'->>'name' AS nombre,
-        sub->'item'->>'type' AS tipo,
-        sub->'item'->>'status' AS estado,
+        NULLIF(sub->'item'->>'name', '') AS nombre,
+        NULLIF(sub->'item'->>'type', '') AS tipo,
+        NULLIF(sub->'item'->>'status', '') AS estado,
         NULLIF(sub->'item'->>'reference', '') AS referencia,
         NULLIF(sub->'item'->>'description', '') AS descripcion,
-        (sub->'item'->'inventory'->>'availableQuantity')::numeric AS stock_disponible,
+        NULLIF(sub->'item'->'inventory'->>'availableQuantity', '')::numeric AS stock_disponible,
         NULLIF(sub->'item'->'inventory'->>'unit', '') AS unidad,
-        (sub->'item'->'inventory'->>'unitCost')::numeric AS costo_unitario
-    FROM silver.productos p,
+        NULLIF(sub->'item'->'inventory'->>'unitCost', '')::numeric AS costo_unitario
+    FROM alegra.productos p,
          LATERAL jsonb_array_elements(p.subitems) sub
     """)
     run(cur, "ALTER TABLE silver.productos_subitems ADD PRIMARY KEY (producto_alegra_id, linea);")
@@ -417,6 +441,7 @@ def main():
         fk_name = f"fk_{table}_{fk_col}"
         print(f"  silver.{table}.{fk_col} -> silver.{ref_table}.{ref_col}...", end=" ", flush=True)
         try:
+            run(cur, f"ALTER TABLE silver.{table} DROP CONSTRAINT IF EXISTS {fk_name}")
             run(cur, f"""
                 ALTER TABLE silver.{table}
                 ADD CONSTRAINT {fk_name}
