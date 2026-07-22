@@ -34,7 +34,7 @@ on:
 jobs:
   silver-pipeline:
     runs-on: ubuntu-latest
-    name: Silver ETL (${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '0 6 * * *' && 'FULL' || 'INCREMENTAL') }})
+    name: Silver ETL
 
     steps:
       - name: Checkout repo
