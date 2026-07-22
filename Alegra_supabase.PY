@@ -639,8 +639,11 @@ def get_alegra_total(endpoint):
                 continue
             resp.raise_for_status()
             body = resp.json()
-            if isinstance(body, dict) and "metadata" in body:
-                return body["metadata"].get("total")
+            if isinstance(body, dict):
+                if "metadata" in body:
+                    return body["metadata"].get("total")
+                if "total" in body:
+                    return body["total"]
         except Exception as e:
             if attempt == max_retries:
                 print(f"    metadata check fallo: {e}")
@@ -667,20 +670,20 @@ def backfill_tabla(cur, conf, date_from=None, incremental=False):
         page = fetch_page(endpoint, 0, singular=True)
         return cargar_pagina(cur, tabla, columnas, page, pk_campo, forzar_id="1")
 
-    # Modo incremental: chequear metadata primero para no fetchear si no hay datos nuevos
-    start = 0
+    # Modo incremental: chequear metadata para saltar tablas sin cambios
     if incremental:
         alegra_total = get_alegra_total(endpoint)
         local_count = get_local_count(cur, tabla)
         if alegra_total is not None and alegra_total <= local_count:
-            return 0  # no hay datos nuevos, salir rapido
+            print(f"    metadata: alegra={alegra_total}, local={local_count}, sin cambios")
+            return 0
         if alegra_total is not None:
-            start = local_count  # solo fetchear desde donde estamos
-            print(f"    metadata: alegra={alegra_total}, local={local_count}, fetch desde {start}")
+            print(f"    metadata: alegra={alegra_total}, local={local_count}, hay cambios")
 
     total_synced = 0
     max_pages = 2000
     page_count = 0
+    start = 0
     while True:
         if page_count > 0 and page_count % 50 == 0:
             print(f"\n    [{tabla}] pagina {page_count}, total {total_synced}...")
@@ -790,22 +793,13 @@ def main():
     if errores:
         print(f"\nListo con {len(errores)} error(es) de {total_tablas} tablas: {errores}")
         if ok_count == 0:
-            # 0% de exito = fallo total, retornar 1
             sys.exit(1)
         elif ok_count >= total_tablas * 0.5:
-            # Mas del 50% de tablas OK = exito parcial, no fallar el pipeline
             print(f"  (sync parcial OK: {ok_count}/{total_tablas} tablas)")
             return
         else:
-            # Menos del 50% OK = fallo serio
             print(f"  (sync con {ok_count}/{total_tablas} tablas OK, marcando como fallido)")
             sys.exit(1)
-    else:
-        print(f"\nListo ({mode}). Revisa el schema 'alegra' en Supabase.")
-
-    if errores:
-        print(f"\nListo con {len(errores)} error(es): {errores}")
-        sys.exit(1)
     else:
         print(f"\nListo ({mode}). Revisa el schema 'alegra' en Supabase.")
 
