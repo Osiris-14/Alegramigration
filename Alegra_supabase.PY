@@ -539,18 +539,40 @@ def fetch_page(endpoint, start, singular=False, date_from=None):
         if date_from:
             params["date_created_start"] = date_from
 
-    resp = requests.get(f"{BASE_URL}{endpoint}", headers=HEADERS, params=params, timeout=60)
+    # Retry con backoff para errores 5xx transitorios (Alegra tiene 503 intermitentes en /journals)
+    max_retries = 5
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.get(f"{BASE_URL}{endpoint}", headers=HEADERS, params=params, timeout=60)
+        except requests.RequestException as e:
+            if attempt < max_retries:
+                wait = 2 ** attempt
+                print(f"    network error ({e.__class__.__name__}), reintento {attempt}/{max_retries} en {wait}s...")
+                time.sleep(wait)
+                continue
+            raise
 
-    remaining = resp.headers.get("X-Rate-Limit-Remaining")
-    reset = resp.headers.get("X-Rate-Limit-Reset")
+        remaining = resp.headers.get("X-Rate-Limit-Remaining")
+        reset = resp.headers.get("X-Rate-Limit-Reset")
 
-    if resp.status_code == 429:
-        wait = int(reset) + 1 if reset else 60
-        print(f"    rate limit alcanzado, esperando {wait}s...")
-        time.sleep(wait)
-        return fetch_page(endpoint, start, singular, date_from)
+        if resp.status_code == 429:
+            wait = int(reset) + 1 if reset else 60
+            print(f"    rate limit alcanzado, esperando {wait}s...")
+            time.sleep(wait)
+            return fetch_page(endpoint, start, singular, date_from)
 
-    resp.raise_for_status()
+        # Reintentar errores 5xx transitorios con backoff exponencial
+        if resp.status_code in (502, 503, 504) and attempt < max_retries:
+            wait = 2 ** attempt
+            print(f"    {endpoint} devolvio {resp.status_code}, reintento {attempt}/{max_retries} en {wait}s...")
+            time.sleep(wait)
+            continue
+
+        resp.raise_for_status()
+        break
+    else:
+        # Si agotamos todos los reintentos en 5xx
+        resp.raise_for_status()
 
     if remaining is not None and int(remaining) <= 3:
         wait = int(reset) + 1 if reset else 5
