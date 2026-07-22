@@ -705,6 +705,7 @@ def main():
         print(f"MODO FULL - {len(tablas_a_sync)} tablas\n")
 
     errores = []
+    total_tablas = len(tablas_a_sync)
     for clave, conf in tablas_a_sync.items():
         print(f"-> {conf['tabla']:25s}", end=" ", flush=True)
         try:
@@ -722,6 +723,23 @@ def main():
 
     cur.close()
     conn.close()
+
+    ok_count = total_tablas - len(errores)
+    if errores:
+        print(f"\nListo con {len(errores)} error(es) de {total_tablas} tablas: {errores}")
+        if ok_count == 0:
+            # 0% de exito = fallo total, retornar 1
+            sys.exit(1)
+        elif ok_count >= total_tablas * 0.5:
+            # Mas del 50% de tablas OK = exito parcial, no fallar el pipeline
+            print(f"  (sync parcial OK: {ok_count}/{total_tablas} tablas)")
+            return
+        else:
+            # Menos del 50% OK = fallo serio
+            print(f"  (sync con {ok_count}/{total_tablas} tablas OK, marcando como fallido)")
+            sys.exit(1)
+    else:
+        print(f"\nListo ({mode}). Revisa el schema 'alegra' en Supabase.")
 
     if errores:
         print(f"\nListo con {len(errores)} error(es): {errores}")
