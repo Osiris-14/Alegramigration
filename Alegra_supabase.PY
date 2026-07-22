@@ -625,7 +625,36 @@ def cargar_pagina(cur, tabla, columnas, page, pk_campo, forzar_id=None):
     return len(filas)
 
 
-def backfill_tabla(cur, conf, date_from=None):
+def get_alegra_total(endpoint):
+    """Consulta metadata de Alegra para obtener el total de registros sin paginar."""
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.get(
+                f"{BASE_URL}{endpoint}", headers=HEADERS,
+                params={"limit": 1, "metadata": "true"}, timeout=30
+            )
+            if resp.status_code in (502, 503, 504) and attempt < max_retries:
+                time.sleep(2 ** attempt)
+                continue
+            resp.raise_for_status()
+            body = resp.json()
+            if isinstance(body, dict) and "metadata" in body:
+                return body["metadata"].get("total")
+        except Exception as e:
+            if attempt == max_retries:
+                print(f"    metadata check fallo: {e}")
+                return None
+            time.sleep(2 ** attempt)
+    return None
+
+
+def get_local_count(cur, tabla):
+    cur.execute(f'SELECT count(*) FROM {SCHEMA}."{tabla}"')
+    return cur.fetchone()[0]
+
+
+def backfill_tabla(cur, conf, date_from=None, incremental=False):
     tabla = conf["tabla"]
     endpoint = conf["endpoint"]
     columnas = conf["columnas"]
@@ -638,8 +667,18 @@ def backfill_tabla(cur, conf, date_from=None):
         page = fetch_page(endpoint, 0, singular=True)
         return cargar_pagina(cur, tabla, columnas, page, pk_campo, forzar_id="1")
 
-    total_synced = 0
+    # Modo incremental: chequear metadata primero para no fetchear si no hay datos nuevos
     start = 0
+    if incremental:
+        alegra_total = get_alegra_total(endpoint)
+        local_count = get_local_count(cur, tabla)
+        if alegra_total is not None and alegra_total <= local_count:
+            return 0  # no hay datos nuevos, salir rapido
+        if alegra_total is not None:
+            start = local_count  # solo fetchear desde donde estamos
+            print(f"    metadata: alegra={alegra_total}, local={local_count}, fetch desde {start}")
+
+    total_synced = 0
     max_pages = 2000
     page_count = 0
     while True:
@@ -728,10 +767,11 @@ def main():
 
     errores = []
     total_tablas = len(tablas_a_sync)
+    is_incremental = bool(date_from)
     for clave, conf in tablas_a_sync.items():
         print(f"-> {conf['tabla']:25s}", end=" ", flush=True)
         try:
-            n = backfill_tabla(cur, conf, date_from=date_from)
+            n = backfill_tabla(cur, conf, date_from=date_from, incremental=is_incremental)
             conn.commit()
             print(f"OK ({n} registros)")
         except Exception as e:

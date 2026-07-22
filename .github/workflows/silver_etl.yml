@@ -2,28 +2,30 @@ name: Silver ETL Pipeline
 
 # Estrategia de ejecucion (hora UTC / hora RD UTC-4):
 #
-# FULL SYNC      - 1 vez/dia a las 02:00 UTC (10:00 PM RD)
-#                  Corre los 5 pasos completos (~2h)
-#                  Regenera bronce + silver completo
+# FULL SYNC      - 1 vez/dia a las 06:00 UTC (02:00 AM RD)
+#                  Regenera bronce + silver completo (~2h)
+#
+# INCREMENTAL    - 3 veces/dia a las 10, 14, 22 UTC
+#   (hora RD)       06am, 10am, 06pm RD
+#                  Solo trae registros nuevos desde Alegra (~segundos si no hay nada nuevo)
+#                  Usa metadata=true para chequear el total y solo fetchear si hay diff
 #
 # Manual dispatch: full o incremental, segun necesidad
-#   - incremental: solo actualiza bronce (no toca silver)
-#   - full: regenera todo
-#
-# Sin cron incremental: la API de Alegra no filtra bien por fecha
-# y un incremental tarda casi lo mismo que un full. Por simplicidad
-# el silver se actualiza una vez al dia, en el full de madrugada.
 
 on:
   schedule:
-    # Full sync - 02:00 UTC (10pm RD)
+    # Full sync - 06:00 UTC (02:00 AM RD)
+    - cron: '0 6 * * *'
+    # Incrementales - 10am, 10am, 6pm RD
+    - cron: '0 14 * * *'
+    - cron: '0 18 * * *'
     - cron: '0 2 * * *'
   workflow_dispatch:
     inputs:
       mode:
         description: 'Modo de ejecucion'
         required: false
-        default: 'full'
+        default: 'incremental'
         type: choice
         options:
           - full
@@ -32,7 +34,7 @@ on:
 jobs:
   silver-pipeline:
     runs-on: ubuntu-latest
-    name: Silver ETL (${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'FULL' }})
+    name: Silver ETL (${{ github.event_name == 'workflow_dispatch' && inputs.mode || (github.event.schedule == '0 6 * * *' && 'FULL' || 'INCREMENTAL') }})
 
     steps:
       - name: Checkout repo
@@ -42,7 +44,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
+        cache: 'pip'
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -52,8 +54,10 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=${{ inputs.mode }}" >> $GITHUB_OUTPUT
-          else
+          elif [ "${{ github.event.schedule }}" = "0 6 * * *" ]; then
             echo "mode=full" >> $GITHUB_OUTPUT
+          else
+            echo "mode=incremental" >> $GITHUB_OUTPUT
           fi
 
       - name: Run Silver Pipeline
