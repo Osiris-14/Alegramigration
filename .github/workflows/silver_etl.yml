@@ -5,9 +5,9 @@ name: Silver ETL Pipeline
 # FULL SYNC      - 1 vez/dia a las 06:00 UTC (02:00 AM RD)
 #                  Regenera bronce + silver completo (~2h)
 #
-# INCREMENTAL    - 3 veces/dia a las 10, 14, 22 UTC
-#   (hora RD)       06am, 10am, 06pm RD
-#                  Solo trae registros nuevos desde Alegra (~segundos si no hay nada nuevo)
+# INCREMENTAL    - 3 veces/dia a las 14, 18, 22 UTC
+#   (hora RD)       10am, 2pm, 6pm RD
+#                  Solo trae registros nuevos desde Alegra (~20s si no hay nada nuevo)
 #                  Usa metadata=true para chequear el total y solo fetchear si hay diff
 #
 # Manual dispatch: full o incremental, segun necesidad
@@ -16,10 +16,10 @@ on:
   schedule:
     # Full sync - 06:00 UTC (02:00 AM RD)
     - cron: '0 6 * * *'
-    # Incrementales - 10am, 10am, 6pm RD
+    # 3 incrementales - 10am, 2pm, 6pm RD
     - cron: '0 14 * * *'
     - cron: '0 18 * * *'
-    - cron: '0 2 * * *'
+    - cron: '0 22 * * *'
   workflow_dispatch:
     inputs:
       mode:
