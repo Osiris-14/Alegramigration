@@ -21,6 +21,37 @@ def count(cur, table):
     return cur.fetchone()[0]
 
 
+def source_exists(cur, schema, table):
+    cur.execute(f"""
+        SELECT EXISTS (SELECT FROM information_schema.tables
+        WHERE table_schema='{schema}' AND table_name='{table}')
+    """)
+    return cur.fetchone()[0]
+
+
+def create_from_alegra(cur, conn, silver_table, source_table, create_sql):
+    cur.execute(f"DROP TABLE IF EXISTS silver.{silver_table} CASCADE;")
+    if not source_exists(cur, 'alegra', source_table):
+        print(f"    aviso: alegra.{source_table} no existe, creando silver.{silver_table} vacía")
+        cur.execute(f"CREATE TABLE silver.{silver_table} (alegra_id text PRIMARY KEY, sincronizado_en timestamptz);")
+        conn.commit()
+        return False
+    cur.execute(create_sql)
+    return True
+
+
+def process_block(cur, conn, silver_table, source_table, create_sql, label, after_sqls=None):
+    print(f"\n[{label}]...")
+    if not create_from_alegra(cur, conn, silver_table, source_table, create_sql):
+        print(f"  OK - 0 filas (esquema fuente no existe)")
+        return
+    if after_sqls:
+        for s in after_sqls:
+            run(cur, s)
+    conn.commit()
+    print(f"  OK - {count(cur, silver_table):,} filas")
+
+
 def main():
     print("Conectando a Supabase...")
     conn = psycopg2.connect(CONN_STRING)
@@ -39,15 +70,12 @@ def main():
     # ----------------------------------------------------------
     # silver.contactos - MEJORADO
     # ----------------------------------------------------------
-    print("\n[1.1] silver.contactos (mejorado)...")
     run(cur, "CREATE SCHEMA IF NOT EXISTS silver;")
-    run(cur, "DROP TABLE IF EXISTS silver.contactos CASCADE;")
-    run(cur, """
+    process_block(cur, conn, "contactos", "contactos", """
     CREATE TABLE silver.contactos AS
     SELECT
         c.id                                                        AS alegra_id,
         trim(c.nombre)                                              AS nombre,
-        -- RNc / identificacion
         CASE
             WHEN trim(c.identificacion->>'number') IS NOT NULL
              AND trim(c.identificacion->>'number') != ''
@@ -55,10 +83,8 @@ def main():
             ELSE '0000000'
         END                                                         AS rnc,
         c.identificacion->>'type'                                   AS tipo_identificacion,
-        -- Tipo cliente/proveedor desde array JSON
         c.tipo::text ILIKE '%client%'                               AS es_cliente,
         c.tipo::text ILIKE '%provider%'                             AS es_proveedor,
-        -- Contacto
         c.correo                                                    AS email,
         CASE
             WHEN regexp_replace(COALESCE(c.telefono_principal, c.celular, ''), '[^0-9]', '', 'g') = ''
@@ -70,39 +96,33 @@ def main():
                 THEN regexp_replace(COALESCE(c.telefono_principal, c.celular, ''), '[^0-9]', '', 'g')
             ELSE NULL
         END                                                         AS telefono,
-        -- Dirección aplanada desde JSON
         nullif(trim(c.direccion->>'description'), '')               AS dir_descripcion,
         nullif(trim(c.direccion->>'municipality'), '')              AS dir_municipio,
         nullif(trim(c.direccion->>'province'), '')                  AS dir_provincia,
         nullif(trim(c.direccion->>'country'), '')                   AS dir_pais,
-        -- Campos comerciales
         c.limite_credito,
         c.lista_precio_id,
         c.vendedor_id,
         c.termino_pago_id,
-        -- IDs / fechas
         c.uuid,
         c.fecha_creacion,
         c.fecha_actualizacion,
         c.estado,
         c.sincronizado_en                                           AS alegra_sync_at
     FROM alegra.contactos c;
-    """)
-    run(cur, "ALTER TABLE silver.contactos ADD PRIMARY KEY (alegra_id);")
-    run(cur, "CREATE INDEX ON silver.contactos(rnc);")
-    run(cur, "CREATE INDEX ON silver.contactos(es_cliente);")
-    run(cur, "CREATE INDEX ON silver.contactos(es_proveedor);")
-    run(cur, "CREATE INDEX ON silver.contactos(vendedor_id);")
-    run(cur, "CREATE INDEX ON silver.contactos(estado);")
-    conn.commit()
-    print(f"  OK - {count(cur, 'contactos'):,} filas")
+    """, after_sqls=[
+        "ALTER TABLE silver.contactos ADD PRIMARY KEY (alegra_id);",
+        "CREATE INDEX ON silver.contactos(rnc);",
+        "CREATE INDEX ON silver.contactos(es_cliente);",
+        "CREATE INDEX ON silver.contactos(es_proveedor);",
+        "CREATE INDEX ON silver.contactos(vendedor_id);",
+        "CREATE INDEX ON silver.contactos(estado);",
+    ])
 
     # ----------------------------------------------------------
     # silver.productos - MEJORADO
     # ----------------------------------------------------------
-    print("\n[1.2] silver.productos (mejorado)...")
-    run(cur, "DROP TABLE IF EXISTS silver.productos CASCADE;")
-    run(cur, """
+    process_block(cur, conn, "productos", "productos", """
     CREATE TABLE silver.productos AS
     WITH pm AS (
         SELECT id,
@@ -149,21 +169,18 @@ def main():
     FROM alegra.productos p
     LEFT JOIN pm ON pm.id = p.id
     LEFT JOIN it ON it.id = p.id;
-    """)
-    run(cur, "ALTER TABLE silver.productos ADD PRIMARY KEY (alegra_id);")
-    run(cur, "CREATE INDEX ON silver.productos(estado);")
-    run(cur, "CREATE INDEX ON silver.productos(tipo);")
-    run(cur, "CREATE INDEX ON silver.productos(categoria_id);")
-    run(cur, "CREATE INDEX ON silver.productos(tiene_itbis);")
-    conn.commit()
-    print(f"  OK - {count(cur, 'productos'):,} filas")
+    """, after_sqls=[
+        "ALTER TABLE silver.productos ADD PRIMARY KEY (alegra_id);",
+        "CREATE INDEX ON silver.productos(estado);",
+        "CREATE INDEX ON silver.productos(tipo);",
+        "CREATE INDEX ON silver.productos(categoria_id);",
+        "CREATE INDEX ON silver.productos(tiene_itbis);",
+    ])
 
     # ----------------------------------------------------------
     # silver.facturas_venta - MEJORADO
     # ----------------------------------------------------------
-    print("\n[1.3] silver.facturas_venta (mejorado)...")
-    run(cur, "DROP TABLE IF EXISTS silver.facturas_venta CASCADE;")
-    run(cur, """
+    process_block(cur, conn, "facturas_venta", "facturas_venta", """
     CREATE TABLE silver.facturas_venta AS
     SELECT
         f.id                                                        AS alegra_id,
@@ -176,12 +193,12 @@ def main():
         f.subtotal,
         f.subtotal_con_descuento,
         CASE
-            WHEN f.descuento IS NOT NULL AND f.descuento::text ~ '^[0-9]+(\.[0-9]+)?$'
+            WHEN f.descuento IS NOT NULL AND f.descuento::text ~ '^-?[0-9]+(\.[0-9]+)?$'
             THEN f.descuento::text::numeric
             ELSE NULL
         END                                                         AS descuento_monto,
         CASE
-            WHEN f.impuesto IS NOT NULL AND f.impuesto::text ~ '^[0-9]+(\.[0-9]+)?$'
+            WHEN f.impuesto IS NOT NULL AND f.impuesto::text ~ '^-?[0-9]+(\.[0-9]+)?$'
             THEN f.impuesto::text::numeric
             ELSE NULL
         END                                                         AS impuesto_monto,
@@ -197,9 +214,7 @@ def main():
         f.termino_pago_id,
         f.plantilla_numeracion_id,
         f.observaciones,
-        -- Items de la factura como JSONB para análisis posterior
         f.items,
-        -- Cantidad de ítems calculada
         CASE
             WHEN f.items IS NOT NULL AND jsonb_typeof(f.items) = 'array'
             THEN jsonb_array_length(f.items)
@@ -208,23 +223,20 @@ def main():
         f.pagos_aplicados,
         f.sincronizado_en                                           AS alegra_sync_at
     FROM alegra.facturas_venta f;
-    """)
-    run(cur, "ALTER TABLE silver.facturas_venta ADD PRIMARY KEY (alegra_id);")
-    run(cur, "CREATE INDEX ON silver.facturas_venta(cliente_alegra_id);")
-    run(cur, "CREATE INDEX ON silver.facturas_venta(vendedor_alegra_id);")
-    run(cur, "CREATE INDEX ON silver.facturas_venta(fecha);")
-    run(cur, "CREATE INDEX ON silver.facturas_venta(estado);")
-    run(cur, "CREATE INDEX ON silver.facturas_venta(ncf);")
-    run(cur, "CREATE INDEX ON silver.facturas_venta(bodega_id);")
-    conn.commit()
-    print(f"  OK - {count(cur, 'facturas_venta'):,} filas")
+    """, after_sqls=[
+        "ALTER TABLE silver.facturas_venta ADD PRIMARY KEY (alegra_id);",
+        "CREATE INDEX ON silver.facturas_venta(cliente_alegra_id);",
+        "CREATE INDEX ON silver.facturas_venta(vendedor_alegra_id);",
+        "CREATE INDEX ON silver.facturas_venta(fecha);",
+        "CREATE INDEX ON silver.facturas_venta(estado);",
+        "CREATE INDEX ON silver.facturas_venta(ncf);",
+        "CREATE INDEX ON silver.facturas_venta(bodega_id);",
+    ])
 
     # ----------------------------------------------------------
     # silver.usuarios - MEJORADO
     # ----------------------------------------------------------
-    print("\n[1.4] silver.usuarios (mejorado)...")
-    run(cur, "DROP TABLE IF EXISTS silver.usuarios CASCADE;")
-    run(cur, """
+    process_block(cur, conn, "usuarios", "usuarios", """
     CREATE TABLE silver.usuarios AS
     SELECT
         u.id                                                        AS alegra_id,
@@ -236,7 +248,6 @@ def main():
         ))                                                          AS nombre_completo,
         u.correo                                                    AS email,
         u.nombre_usuario,
-        -- rol puede ser texto o JSONB según el registro
         CASE
             WHEN u.rol IS NULL THEN NULL
             WHEN jsonb_typeof(u.rol::jsonb) = 'object' THEN u.rol::jsonb->>'name'
@@ -253,11 +264,10 @@ def main():
         u.estado,
         u.sincronizado_en                                           AS alegra_sync_at
     FROM alegra.usuarios u;
-    """)
-    run(cur, "ALTER TABLE silver.usuarios ADD PRIMARY KEY (alegra_id);")
-    run(cur, "CREATE INDEX ON silver.usuarios(estado);")
-    conn.commit()
-    print(f"  OK - {count(cur, 'usuarios'):,} filas")
+    """, after_sqls=[
+        "ALTER TABLE silver.usuarios ADD PRIMARY KEY (alegra_id);",
+        "CREATE INDEX ON silver.usuarios(estado);",
+    ])
 
     # ============================================================
     # TABLAS NUEVAS - TRANSACCIONALES
@@ -270,9 +280,7 @@ def main():
     # ----------------------------------------------------------
     # silver.cotizaciones - NUEVA
     # ----------------------------------------------------------
-    print("\n[2.1] silver.cotizaciones (NUEVA)...")
-    run(cur, "DROP TABLE IF EXISTS silver.cotizaciones CASCADE;")
-    run(cur, """
+    process_block(cur, conn, "cotizaciones", "cotizaciones", """
     CREATE TABLE silver.cotizaciones AS
     SELECT
         q.id                                                        AS alegra_id,
@@ -282,7 +290,6 @@ def main():
         q.fecha,
         q.fecha_vencimiento,
         q.estado,
-        -- Moneda aplanada
         q.moneda->>'code'                                           AS moneda_codigo,
         q.moneda->>'symbol'                                         AS moneda_simbolo,
         COALESCE((q.moneda->>'exchangeRate')::numeric, 1)           AS tasa_cambio,
@@ -292,7 +299,6 @@ def main():
         q.lista_precio_id,
         q.plantilla_numeracion_id,
         q.observaciones,
-        -- Items como JSONB
         q.items,
         CASE
             WHEN q.items IS NOT NULL AND jsonb_typeof(q.items) = 'array'
@@ -301,27 +307,24 @@ def main():
         END                                                         AS num_items,
         q.sincronizado_en                                           AS alegra_sync_at
     FROM alegra.cotizaciones q;
-    """)
-    run(cur, "ALTER TABLE silver.cotizaciones ADD PRIMARY KEY (alegra_id);")
-    run(cur, "CREATE INDEX ON silver.cotizaciones(cliente_alegra_id);")
-    run(cur, "CREATE INDEX ON silver.cotizaciones(vendedor_alegra_id);")
-    run(cur, "CREATE INDEX ON silver.cotizaciones(fecha);")
-    run(cur, "CREATE INDEX ON silver.cotizaciones(estado);")
-    run(cur, "CREATE INDEX ON silver.cotizaciones(numero);")
-    conn.commit()
-    print(f"  OK - {count(cur, 'cotizaciones'):,} filas")
+    """, after_sqls=[
+        "ALTER TABLE silver.cotizaciones ADD PRIMARY KEY (alegra_id);",
+        "CREATE INDEX ON silver.cotizaciones(cliente_alegra_id);",
+        "CREATE INDEX ON silver.cotizaciones(vendedor_alegra_id);",
+        "CREATE INDEX ON silver.cotizaciones(fecha);",
+        "CREATE INDEX ON silver.cotizaciones(estado);",
+        "CREATE INDEX ON silver.cotizaciones(numero);",
+    ])
 
     # ----------------------------------------------------------
     # silver.pagos - NUEVA
     # ----------------------------------------------------------
-    print("\n[2.2] silver.pagos (NUEVA)...")
-    run(cur, "DROP TABLE IF EXISTS silver.pagos CASCADE;")
-    run(cur, """
+    process_block(cur, conn, "pagos", "pagos", """
     CREATE TABLE silver.pagos AS
     SELECT
         p.id                                                        AS alegra_id,
         p.numero,
-        p.tipo,            -- 'in' = cobro, 'out' = pago a proveedor
+        p.tipo,
         p.fecha,
         p.monto,
         p.estado,
@@ -331,27 +334,23 @@ def main():
         p.centro_costo_id,
         p.plantilla_numeracion_id,
         p.observaciones,
-        -- Facturas aplicadas como JSONB
         p.facturas_compra_aplicadas                                 AS facturas_aplicadas,
         p.sincronizado_en                                           AS alegra_sync_at
     FROM alegra.pagos p;
-    """)
-    run(cur, "ALTER TABLE silver.pagos ADD PRIMARY KEY (alegra_id);")
-    run(cur, "CREATE INDEX ON silver.pagos(contacto_alegra_id);")
-    run(cur, "CREATE INDEX ON silver.pagos(fecha);")
-    run(cur, "CREATE INDEX ON silver.pagos(tipo);")
-    run(cur, "CREATE INDEX ON silver.pagos(estado);")
-    run(cur, "CREATE INDEX ON silver.pagos(metodo_pago);")
-    run(cur, "CREATE INDEX ON silver.pagos(cuenta_bancaria_id);")
-    conn.commit()
-    print(f"  OK - {count(cur, 'pagos'):,} filas")
+    """, after_sqls=[
+        "ALTER TABLE silver.pagos ADD PRIMARY KEY (alegra_id);",
+        "CREATE INDEX ON silver.pagos(contacto_alegra_id);",
+        "CREATE INDEX ON silver.pagos(fecha);",
+        "CREATE INDEX ON silver.pagos(tipo);",
+        "CREATE INDEX ON silver.pagos(estado);",
+        "CREATE INDEX ON silver.pagos(metodo_pago);",
+        "CREATE INDEX ON silver.pagos(cuenta_bancaria_id);",
+    ])
 
     # ----------------------------------------------------------
     # silver.facturas_compra - NUEVA
     # ----------------------------------------------------------
-    print("\n[2.3] silver.facturas_compra (NUEVA)...")
-    run(cur, "DROP TABLE IF EXISTS silver.facturas_compra CASCADE;")
-    run(cur, """
+    process_block(cur, conn, "facturas_compra", "facturas_compra", """
     CREATE TABLE silver.facturas_compra AS
     SELECT
         fc.id                                                       AS alegra_id,
@@ -367,7 +366,6 @@ def main():
         fc.sujeta_proporcionalidad,
         fc.observaciones,
         fc.compras,
-        -- Cantidad de ítems
         CASE
             WHEN fc.compras IS NOT NULL AND jsonb_typeof(fc.compras) = 'array'
             THEN jsonb_array_length(fc.compras)
@@ -377,21 +375,18 @@ def main():
         fc.pagos_aplicados,
         fc.sincronizado_en                                          AS alegra_sync_at
     FROM alegra.facturas_compra fc;
-    """)
-    run(cur, "ALTER TABLE silver.facturas_compra ADD PRIMARY KEY (alegra_id);")
-    run(cur, "CREATE INDEX ON silver.facturas_compra(proveedor_alegra_id);")
-    run(cur, "CREATE INDEX ON silver.facturas_compra(fecha);")
-    run(cur, "CREATE INDEX ON silver.facturas_compra(estado);")
-    run(cur, "CREATE INDEX ON silver.facturas_compra(saldo);")
-    conn.commit()
-    print(f"  OK - {count(cur, 'facturas_compra'):,} filas")
+    """, after_sqls=[
+        "ALTER TABLE silver.facturas_compra ADD PRIMARY KEY (alegra_id);",
+        "CREATE INDEX ON silver.facturas_compra(proveedor_alegra_id);",
+        "CREATE INDEX ON silver.facturas_compra(fecha);",
+        "CREATE INDEX ON silver.facturas_compra(estado);",
+        "CREATE INDEX ON silver.facturas_compra(saldo);",
+    ])
 
     # ----------------------------------------------------------
     # silver.ordenes_compra - NUEVA
     # ----------------------------------------------------------
-    print("\n[2.4] silver.ordenes_compra (NUEVA)...")
-    run(cur, "DROP TABLE IF EXISTS silver.ordenes_compra CASCADE;")
-    run(cur, """
+    process_block(cur, conn, "ordenes_compra", "ordenes_compra", """
     CREATE TABLE silver.ordenes_compra AS
     SELECT
         oc.id                                                       AS alegra_id,
@@ -412,20 +407,17 @@ def main():
         END                                                         AS num_items,
         oc.sincronizado_en                                          AS alegra_sync_at
     FROM alegra.ordenes_compra oc;
-    """)
-    run(cur, "ALTER TABLE silver.ordenes_compra ADD PRIMARY KEY (alegra_id);")
-    run(cur, "CREATE INDEX ON silver.ordenes_compra(proveedor_alegra_id);")
-    run(cur, "CREATE INDEX ON silver.ordenes_compra(fecha);")
-    run(cur, "CREATE INDEX ON silver.ordenes_compra(estado);")
-    conn.commit()
-    print(f"  OK - {count(cur, 'ordenes_compra'):,} filas")
+    """, after_sqls=[
+        "ALTER TABLE silver.ordenes_compra ADD PRIMARY KEY (alegra_id);",
+        "CREATE INDEX ON silver.ordenes_compra(proveedor_alegra_id);",
+        "CREATE INDEX ON silver.ordenes_compra(fecha);",
+        "CREATE INDEX ON silver.ordenes_compra(estado);",
+    ])
 
     # ----------------------------------------------------------
     # silver.notas_credito - NUEVA
     # ----------------------------------------------------------
-    print("\n[2.5] silver.notas_credito (NUEVA)...")
-    run(cur, "DROP TABLE IF EXISTS silver.notas_credito CASCADE;")
-    run(cur, """
+    process_block(cur, conn, "notas_credito", "notas_credito", """
     CREATE TABLE silver.notas_credito AS
     SELECT
         nc.id                                                       AS alegra_id,
@@ -434,12 +426,12 @@ def main():
         nc.estado,
         nc.subtotal,
         CASE
-            WHEN nc.descuento IS NOT NULL AND nc.descuento::text ~ '^[0-9]+(\.[0-9]+)?$'
+            WHEN nc.descuento IS NOT NULL AND nc.descuento::text ~ '^-?[0-9]+(\.[0-9]+)?$'
             THEN nc.descuento::text::numeric
             ELSE NULL
         END                                                         AS descuento_monto,
         CASE
-            WHEN nc.impuesto IS NOT NULL AND nc.impuesto::text ~ '^[0-9]+(\.[0-9]+)?$'
+            WHEN nc.impuesto IS NOT NULL AND nc.impuesto::text ~ '^-?[0-9]+(\.[0-9]+)?$'
             THEN nc.impuesto::text::numeric
             ELSE NULL
         END                                                         AS impuesto_monto,
@@ -452,20 +444,17 @@ def main():
         nc.items,
         nc.sincronizado_en                                          AS alegra_sync_at
     FROM alegra.notas_credito nc;
-    """)
-    run(cur, "ALTER TABLE silver.notas_credito ADD PRIMARY KEY (alegra_id);")
-    run(cur, "CREATE INDEX ON silver.notas_credito(cliente_alegra_id);")
-    run(cur, "CREATE INDEX ON silver.notas_credito(fecha);")
-    run(cur, "CREATE INDEX ON silver.notas_credito(estado);")
-    conn.commit()
-    print(f"  OK - {count(cur, 'notas_credito'):,} filas")
+    """, after_sqls=[
+        "ALTER TABLE silver.notas_credito ADD PRIMARY KEY (alegra_id);",
+        "CREATE INDEX ON silver.notas_credito(cliente_alegra_id);",
+        "CREATE INDEX ON silver.notas_credito(fecha);",
+        "CREATE INDEX ON silver.notas_credito(estado);",
+    ])
 
     # ----------------------------------------------------------
     # silver.notas_debito - NUEVA
     # ----------------------------------------------------------
-    print("\n[2.6] silver.notas_debito (NUEVA)...")
-    run(cur, "DROP TABLE IF EXISTS silver.notas_debito CASCADE;")
-    run(cur, """
+    process_block(cur, conn, "notas_debito", "notas_debito", """
     CREATE TABLE silver.notas_debito AS
     SELECT
         nd.id                                                       AS alegra_id,
@@ -481,12 +470,11 @@ def main():
         nd.observaciones,
         nd.sincronizado_en                                          AS alegra_sync_at
     FROM alegra.notas_debito nd;
-    """)
-    run(cur, "ALTER TABLE silver.notas_debito ADD PRIMARY KEY (alegra_id);")
-    run(cur, "CREATE INDEX ON silver.notas_debito(cliente_alegra_id);")
-    run(cur, "CREATE INDEX ON silver.notas_debito(fecha);")
-    conn.commit()
-    print(f"  OK - {count(cur, 'notas_debito'):,} filas")
+    """, after_sqls=[
+        "ALTER TABLE silver.notas_debito ADD PRIMARY KEY (alegra_id);",
+        "CREATE INDEX ON silver.notas_debito(cliente_alegra_id);",
+        "CREATE INDEX ON silver.notas_debito(fecha);",
+    ])
 
     # ============================================================
     # CATÁLOGOS
@@ -497,97 +485,76 @@ def main():
     print("=" * 60)
 
     # silver.categorias_productos
-    print("\n[3.1] silver.categorias_productos...")
-    run(cur, "DROP TABLE IF EXISTS silver.categorias_productos CASCADE;")
-    run(cur, """
+    process_block(cur, conn, "categorias_productos", "categorias_productos", """
     CREATE TABLE silver.categorias_productos AS
     SELECT id AS alegra_id, trim(nombre) AS nombre, descripcion, estado,
            sincronizado_en AS alegra_sync_at
     FROM alegra.categorias_productos;
-    """)
-    run(cur, "ALTER TABLE silver.categorias_productos ADD PRIMARY KEY (alegra_id);")
-    conn.commit()
-    print(f"  OK - {count(cur, 'categorias_productos'):,} filas")
+    """, after_sqls=[
+        "ALTER TABLE silver.categorias_productos ADD PRIMARY KEY (alegra_id);",
+    ])
 
     # silver.bodegas
-    print("\n[3.2] silver.bodegas...")
-    run(cur, "DROP TABLE IF EXISTS silver.bodegas CASCADE;")
-    run(cur, """
+    process_block(cur, conn, "bodegas", "bodegas", """
     CREATE TABLE silver.bodegas AS
     SELECT id AS alegra_id, trim(nombre) AS nombre, es_principal, centro_costo_id, estado,
            sincronizado_en AS alegra_sync_at
     FROM alegra.bodegas;
-    """)
-    run(cur, "ALTER TABLE silver.bodegas ADD PRIMARY KEY (alegra_id);")
-    conn.commit()
-    print(f"  OK - {count(cur, 'bodegas'):,} filas")
+    """, after_sqls=[
+        "ALTER TABLE silver.bodegas ADD PRIMARY KEY (alegra_id);",
+    ])
 
     # silver.centros_costo
-    print("\n[3.3] silver.centros_costo...")
-    run(cur, "DROP TABLE IF EXISTS silver.centros_costo CASCADE;")
-    run(cur, """
+    process_block(cur, conn, "centros_costo", "centros_costo", """
     CREATE TABLE silver.centros_costo AS
     SELECT id AS alegra_id, codigo, trim(nombre) AS nombre, descripcion, estado,
            sincronizado_en AS alegra_sync_at
     FROM alegra.centros_costo;
-    """)
-    run(cur, "ALTER TABLE silver.centros_costo ADD PRIMARY KEY (alegra_id);")
-    conn.commit()
-    print(f"  OK - {count(cur, 'centros_costo'):,} filas")
+    """, after_sqls=[
+        "ALTER TABLE silver.centros_costo ADD PRIMARY KEY (alegra_id);",
+    ])
 
     # silver.impuestos
-    print("\n[3.4] silver.impuestos...")
-    run(cur, "DROP TABLE IF EXISTS silver.impuestos CASCADE;")
-    run(cur, """
+    process_block(cur, conn, "impuestos", "impuestos", """
     CREATE TABLE silver.impuestos AS
     SELECT id AS alegra_id, trim(nombre) AS nombre, porcentaje, tipo, estado,
            sincronizado_en AS alegra_sync_at
     FROM alegra.impuestos;
-    """)
-    run(cur, "ALTER TABLE silver.impuestos ADD PRIMARY KEY (alegra_id);")
-    conn.commit()
-    print(f"  OK - {count(cur, 'impuestos'):,} filas")
+    """, after_sqls=[
+        "ALTER TABLE silver.impuestos ADD PRIMARY KEY (alegra_id);",
+    ])
 
     # silver.terminos_pago
-    print("\n[3.5] silver.terminos_pago...")
-    run(cur, "DROP TABLE IF EXISTS silver.terminos_pago CASCADE;")
-    run(cur, """
+    process_block(cur, conn, "terminos_pago", "terminos_pago", """
     CREATE TABLE silver.terminos_pago AS
     SELECT id AS alegra_id, trim(nombre) AS nombre, dias, estado,
            sincronizado_en AS alegra_sync_at
     FROM alegra.terminos_pago;
-    """)
-    run(cur, "ALTER TABLE silver.terminos_pago ADD PRIMARY KEY (alegra_id);")
-    conn.commit()
-    print(f"  OK - {count(cur, 'terminos_pago'):,} filas")
+    """, after_sqls=[
+        "ALTER TABLE silver.terminos_pago ADD PRIMARY KEY (alegra_id);",
+    ])
 
     # silver.retenciones
-    print("\n[3.6] silver.retenciones...")
-    run(cur, "DROP TABLE IF EXISTS silver.retenciones CASCADE;")
-    run(cur, """
+    process_block(cur, conn, "retenciones", "retenciones", """
     CREATE TABLE silver.retenciones AS
     SELECT id AS alegra_id, trim(nombre) AS nombre, porcentaje, tipo,
            tipo_retencion_606, calculado_por, descripcion, estado,
            sincronizado_en AS alegra_sync_at
     FROM alegra.retenciones;
-    """)
-    run(cur, "ALTER TABLE silver.retenciones ADD PRIMARY KEY (alegra_id);")
-    conn.commit()
-    print(f"  OK - {count(cur, 'retenciones'):,} filas")
+    """, after_sqls=[
+        "ALTER TABLE silver.retenciones ADD PRIMARY KEY (alegra_id);",
+    ])
 
     # silver.cuentas_bancarias
-    print("\n[3.7] silver.cuentas_bancarias...")
-    run(cur, "DROP TABLE IF EXISTS silver.cuentas_bancarias CASCADE;")
-    run(cur, """
+    process_block(cur, conn, "cuentas_bancarias", "cuentas_bancarias", """
     CREATE TABLE silver.cuentas_bancarias AS
     SELECT id AS alegra_id, trim(nombre) AS nombre, numero, tipo, descripcion,
            saldo_inicial, fecha_saldo_inicial, estado,
            sincronizado_en AS alegra_sync_at
     FROM alegra.cuentas_bancarias;
-    """)
-    run(cur, "ALTER TABLE silver.cuentas_bancarias ADD PRIMARY KEY (alegra_id);")
-    conn.commit()
-    print(f"  OK - {count(cur, 'cuentas_bancarias'):,} filas")
+    """, after_sqls=[
+        "ALTER TABLE silver.cuentas_bancarias ADD PRIMARY KEY (alegra_id);",
+    ])
 
     # ============================================================
     # VERIFICACIÓN FINAL
@@ -615,8 +582,11 @@ def main():
         'impuestos', 'terminos_pago', 'retenciones', 'cuentas_bancarias'
     ]
     for t in tablas_alegra:
-        cur.execute(f"SELECT count(*) FROM alegra.{t}")
-        alegra_ref[t] = cur.fetchone()[0]
+        if source_exists(cur, 'alegra', t):
+            cur.execute(f"SELECT count(*) FROM alegra.{t}")
+            alegra_ref[t] = cur.fetchone()[0]
+        else:
+            alegra_ref[t] = 0
 
     totales = {}
     total_silver = 0
@@ -633,31 +603,38 @@ def main():
     print(f"\n  TOTAL FILAS SILVER: {total_silver:,}")
 
     # Verificación adicional: contactos
-    cur.execute("""
-        SELECT
-            count(*) FILTER (WHERE es_cliente) AS clientes,
-            count(*) FILTER (WHERE es_proveedor) AS proveedores,
-            count(*) FILTER (WHERE rnc = '0000000') AS sin_rnc,
-            count(*) FILTER (WHERE dir_municipio IS NOT NULL) AS con_municipio,
-            count(*) FILTER (WHERE limite_credito IS NOT NULL) AS con_credito
-        FROM silver.contactos
-    """)
-    r = cur.fetchone()
-    print(f"\n  Contactos: clientes={r[0]:,} proveedores={r[1]:,} sin_rnc={r[2]:,} con_municipio={r[3]:,} con_credito={r[4]:,}")
+    try:
+        cur.execute("""
+            SELECT
+                count(*) FILTER (WHERE es_cliente) AS clientes,
+                count(*) FILTER (WHERE es_proveedor) AS proveedores,
+                count(*) FILTER (WHERE rnc = '0000000') AS sin_rnc,
+                count(*) FILTER (WHERE dir_municipio IS NOT NULL) AS con_municipio,
+                count(*) FILTER (WHERE limite_credito IS NOT NULL) AS con_credito
+            FROM silver.contactos
+        """)
+        r = cur.fetchone()
+        print(f"\n  Contactos: clientes={r[0]:,} proveedores={r[1]:,} sin_rnc={r[2]:,} con_municipio={r[3]:,} con_credito={r[4]:,}")
+    except Exception as e:
+        print(f"\n  Contactos: salteado ({e})")
 
-    # Verificación: cotizaciones por estado
-    cur.execute("SELECT estado, count(*), sum(total) FROM silver.cotizaciones GROUP BY estado ORDER BY count(*) DESC")
-    rows = cur.fetchall()
-    print(f"\n  Cotizaciones por estado:")
-    for r in rows:
-        print(f"    {r[0]:<15} {r[1]:>6} | RD${float(r[2] or 0):>15,.2f}")
+    try:
+        cur.execute("SELECT estado, count(*), sum(total) FROM silver.cotizaciones GROUP BY estado ORDER BY count(*) DESC")
+        rows = cur.fetchall()
+        print(f"\n  Cotizaciones por estado:")
+        for r in rows:
+            print(f"    {r[0]:<15} {r[1]:>6} | RD${float(r[2] or 0):>15,.2f}")
+    except Exception as e:
+        print(f"\n  Cotizaciones: salteado ({e})")
 
-    # Verificación: pagos por tipo
-    cur.execute("SELECT tipo, count(*), sum(monto) FROM silver.pagos GROUP BY tipo ORDER BY tipo")
-    rows = cur.fetchall()
-    print(f"\n  Pagos por tipo:")
-    for r in rows:
-        print(f"    tipo={r[0]} count={r[1]:,} monto=RD${float(r[2] or 0):>15,.2f}")
+    try:
+        cur.execute("SELECT tipo, count(*), sum(monto) FROM silver.pagos GROUP BY tipo ORDER BY tipo")
+        rows = cur.fetchall()
+        print(f"\n  Pagos por tipo:")
+        for r in rows:
+            print(f"    tipo={r[0]} count={r[1]:,} monto=RD${float(r[2] or 0):>15,.2f}")
+    except Exception as e:
+        print(f"\n  Pagos: salteado ({e})")
 
     # ============================================================
     # REPORTE FINAL

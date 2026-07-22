@@ -89,14 +89,11 @@ def main():
     for args, label in scripts:
         ok = run_script(args, label)
         if not ok:
-            errors.append(args[0])
+            print(f"\n>>> ABORTANDO: {args[0]} falló, los pasos siguientes requieren este paso")
+            sys.exit(1)
 
     print("\n" + "=" * 60)
-    if errors:
-        print(f"PIPELINE [{mode.upper()}] COMPLETADO CON {len(errors)} ERROR(ES): {errors}")
-        sys.exit(1)
-    else:
-        print(f"PIPELINE [{mode.upper()}] COMPLETADO EXITOSAMENTE")
+    print(f"PIPELINE [{mode.upper()}] COMPLETADO EXITOSAMENTE")
     print("=" * 60)
 
 

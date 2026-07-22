@@ -530,6 +530,19 @@ def ensure_table(cur, tabla, columnas):
     """)
 
 
+def _rate_limit_wait(reset_header, default):
+    """X-Rate-Limit-Reset es un timestamp Unix; convertirlo a segundos desde ahora."""
+    if not reset_header:
+        return default
+    try:
+        reset_ts = int(reset_header)
+        now_ts = time.time()
+        wait = reset_ts - now_ts + 1
+        return max(wait, 1)
+    except (ValueError, TypeError):
+        return default
+
+
 def fetch_page(endpoint, start, singular=False, date_from=None):
     if singular:
         params = {}
@@ -556,7 +569,7 @@ def fetch_page(endpoint, start, singular=False, date_from=None):
         reset = resp.headers.get("X-Rate-Limit-Reset")
 
         if resp.status_code == 429:
-            wait = int(reset) + 1 if reset else 60
+            wait = _rate_limit_wait(reset, 60)
             print(f"    rate limit alcanzado, esperando {wait}s...")
             time.sleep(wait)
             return fetch_page(endpoint, start, singular, date_from)
@@ -575,7 +588,7 @@ def fetch_page(endpoint, start, singular=False, date_from=None):
         resp.raise_for_status()
 
     if remaining is not None and int(remaining) <= 3:
-        wait = int(reset) + 1 if reset else 5
+        wait = _rate_limit_wait(reset, 5)
         time.sleep(wait)
 
     body = resp.json()
@@ -750,10 +763,15 @@ def main():
 
     if incremental:
         # Safeguard: si la BD está vacía, forzar FULL aunque pidan --incremental
-        cur.execute("SELECT count(*) FROM alegra.facturas_venta")
-        total_alegra = cur.fetchone()[0]
-        if total_alegra == 0:
-            print("AVISO: el schema 'alegra' está vacío. Cambiando incremental -> full\n")
+        try:
+            cur.execute("SELECT count(*) FROM alegra.facturas_venta")
+            total_alegra = cur.fetchone()[0]
+            if total_alegra == 0:
+                print("AVISO: el schema 'alegra' está vacío. Cambiando incremental -> full\n")
+                incremental = False
+                mode = "full"
+        except psycopg2.errors.UndefinedTable:
+            print("AVISO: tabla alegra.facturas_venta no existe. Cambiando incremental -> full\n")
             incremental = False
             mode = "full"
 

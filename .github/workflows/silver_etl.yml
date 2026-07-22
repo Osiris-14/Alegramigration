@@ -54,10 +54,13 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=${{ inputs.mode }}" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event.schedule }}" = "0 6 * * *" ]; then
-            echo "mode=full" >> $GITHUB_OUTPUT
           else
-            echo "mode=incremental" >> $GITHUB_OUTPUT
+            HOUR=$(TZ=UTC date +%H)
+            if [ "$HOUR" = "06" ]; then
+              echo "mode=full" >> $GITHUB_OUTPUT
+            else
+              echo "mode=incremental" >> $GITHUB_OUTPUT
+            fi
           fi
 
       - name: Run Silver Pipeline

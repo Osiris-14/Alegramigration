@@ -241,7 +241,7 @@ def main():
         NULLIF(cat->>'observations', '') AS observaciones,
         cat->'tax' AS impuestos
     FROM alegra.facturas_compra fc,
-         LATERAL jsonb_array_elements(fc.compras->'categories') cat
+         LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(fc.compras->'categories') = 'array' THEN fc.compras->'categories' ELSE '[]'::jsonb END) cat
     """)
     run(cur, "ALTER TABLE silver.facturas_compra_compras ADD PRIMARY KEY (factura_compra_alegra_id, linea);")
     run(cur, "CREATE INDEX ON silver.facturas_compra_compras(factura_compra_alegra_id);")
@@ -298,7 +298,7 @@ def main():
         NULLIF(cat->>'observations', '') AS observaciones,
         cat->'tax' AS impuestos
     FROM alegra.ordenes_compra oc,
-         LATERAL jsonb_array_elements(oc.compras->'categories') cat
+         LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(oc.compras->'categories') = 'array' THEN oc.compras->'categories' ELSE '[]'::jsonb END) cat
     """)
     run(cur, "ALTER TABLE silver.ordenes_compra_compras ADD PRIMARY KEY (orden_compra_alegra_id, linea);")
     run(cur, "CREATE INDEX ON silver.ordenes_compra_compras(orden_compra_alegra_id);")
@@ -347,7 +347,7 @@ def main():
         NULLIF(imp->>'deductible', '') AS deducible,
         NULLIF(imp->>'description', '') AS descripcion
     FROM alegra.productos p,
-         LATERAL jsonb_array_elements(p.impuestos) imp
+         LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(p.impuestos) = 'array' THEN p.impuestos ELSE '[]'::jsonb END) imp
     """)
     run(cur, "ALTER TABLE silver.productos_impuestos ADD PRIMARY KEY (producto_alegra_id, linea);")
     run(cur, "CREATE INDEX ON silver.productos_impuestos(producto_alegra_id);")
@@ -376,7 +376,7 @@ def main():
         NULLIF(sub->'item'->'inventory'->>'unit', '') AS unidad,
         NULLIF(sub->'item'->'inventory'->>'unitCost', '')::numeric AS costo_unitario
     FROM alegra.productos p,
-         LATERAL jsonb_array_elements(p.subitems) sub
+         LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(p.subitems) = 'array' THEN p.subitems ELSE '[]'::jsonb END) sub
     """)
     run(cur, "ALTER TABLE silver.productos_subitems ADD PRIMARY KEY (producto_alegra_id, linea);")
     run(cur, "CREATE INDEX ON silver.productos_subitems(producto_alegra_id);")
